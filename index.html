@@ -9,783 +9,396 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: {} }
+    }
+  </script>
   <style>
     * { -webkit-tap-highlight-color: transparent; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .toggle { position: relative; width: 44px; height: 24px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle .slider { position: absolute; inset: 0; background: #ccc; border-radius: 24px; transition: .3s; cursor: pointer; }
+    .toggle .slider:before { content: ''; position: absolute; height: 18px; width: 18px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: .3s; }
+    .toggle input:checked + .slider { background: #3b82f6; }
+    .toggle input:checked + .slider:before { transform: translateX(20px); }
+    .dark .toggle .slider { background: #4b5563; }
+    .dark .toggle input:checked + .slider { background: #3b82f6; }
   </style>
 </head>
-<body>
+<body class="bg-gray-100 dark:bg-gray-900 transition-colors">
   <div id="root"></div>
   <script type="text/babel">
     const { useState, useEffect, useMemo, useCallback } = React;
-    
     const TIMEZONE = 'Europe/Zurich';
     const WORK_LAT = 47.44517433218009, WORK_LON = 8.612249846939735;
     const HOME_LAT = 47.44684441370621, HOME_LON = 8.649969104383272;
-    const LOCATION_RADIUS = 250;
+    const COLD_START_DAYS = 14;
 
     const getZurichDate = () => new Date(new Date().toLocaleString('en-US', { timeZone: TIMEZONE }));
     const formatDate = (d) => new Date(d).toLocaleString('de-CH', { timeZone: TIMEZONE });
+    const isWeekday = () => { const d = getZurichDate().getDay(); return d >= 1 && d <= 5; };
+    const todayKey = () => getZurichDate().toDateString();
     
-    const haversineDistance = (lat1, lon1, lat2, lon2) => {
-      const R = 6371000;
-      const toRad = x => x * Math.PI / 180;
+    const haversine = (lat1, lon1, lat2, lon2) => {
+      const R = 6371000, toRad = x => x * Math.PI / 180;
       const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
       const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     };
+    const getLocName = (lat, lon) => haversine(lat, lon, WORK_LAT, WORK_LON) <= 250 ? 'Work' : haversine(lat, lon, HOME_LAT, HOME_LON) <= 250 ? 'Home' : 'On the Road';
     
-    const getLocationName = (lat, lon) => {
-      if (haversineDistance(lat, lon, WORK_LAT, WORK_LON) <= LOCATION_RADIUS) return 'Work';
-      if (haversineDistance(lat, lon, HOME_LAT, HOME_LON) <= LOCATION_RADIUS) return 'Home';
-      return 'On the Road';
-    };
-    
-    const getMoonPhase = (date = new Date()) => {
-      const year = date.getFullYear(), month = date.getMonth() + 1, day = date.getDate();
-      let y = year, m = month;
+    const getMoon = (date = new Date()) => {
+      let y = date.getFullYear(), m = date.getMonth() + 1, d = date.getDate();
       if (m < 3) { y--; m += 12; }
       const c = Math.floor(y / 100);
-      const jd = Math.floor(365.25 * (y + 4716)) + Math.floor(30.6001 * (m + 1)) + day + (2 - c + Math.floor(c/4)) - 1524.5;
+      const jd = Math.floor(365.25 * (y + 4716)) + Math.floor(30.6001 * (m + 1)) + d + (2 - c + Math.floor(c/4)) - 1524.5;
       const age = ((jd - 2451550.1) / 29.530588853 % 1) * 29.53;
-      const phases = [
-        { max: 1.85, name: 'New Moon', icon: '🌑' },
-        { max: 5.54, name: 'Waxing Crescent', icon: '🌒' },
-        { max: 9.23, name: 'First Quarter', icon: '🌓' },
-        { max: 12.92, name: 'Waxing Gibbous', icon: '🌔' },
-        { max: 16.61, name: 'Full Moon', icon: '🌕' },
-        { max: 20.30, name: 'Waning Gibbous', icon: '🌖' },
-        { max: 23.99, name: 'Last Quarter', icon: '🌗' },
-        { max: 27.68, name: 'Waning Crescent', icon: '🌘' },
-        { max: 30, name: 'New Moon', icon: '🌑' }
-      ];
-      const phase = phases.find(p => age < p.max) || phases[0];
-      return { ...phase, illumination: Math.round((1 - Math.abs(age - 14.765) / 14.765) * 100), age: Math.round(age * 10) / 10 };
+      const phases = [{m:1.85,n:'New',i:'🌑'},{m:5.54,n:'Wax Cres',i:'🌒'},{m:9.23,n:'1st Qtr',i:'🌓'},{m:12.92,n:'Wax Gib',i:'🌔'},{m:16.61,n:'Full',i:'🌕'},{m:20.30,n:'Wan Gib',i:'🌖'},{m:23.99,n:'3rd Qtr',i:'🌗'},{m:27.68,n:'Wan Cres',i:'🌘'},{m:30,n:'New',i:'🌑'}];
+      const p = phases.find(p => age < p.m) || phases[0];
+      return { name: p.n, icon: p.i, illum: Math.round((1 - Math.abs(age - 14.765) / 14.765) * 100), cyclic: (Math.cos((age / 29.53) * 2 * Math.PI) + 1) / 2 };
     };
 
-    const weatherCodes = {
-      0: { desc: 'Clear', icon: 'Sun', score: 5 }, 1: { desc: 'Mostly Clear', icon: 'Sun', score: 5 },
-      2: { desc: 'Partly Cloudy', icon: 'CloudSun', score: 4 }, 3: { desc: 'Overcast', icon: 'Cloud', score: 3 },
-      45: { desc: 'Foggy', icon: 'CloudFog', score: 2 }, 48: { desc: 'Icy Fog', icon: 'CloudFog', score: 1 },
-      51: { desc: 'Light Drizzle', icon: 'CloudDrizzle', score: 3 }, 53: { desc: 'Drizzle', icon: 'CloudDrizzle', score: 2 },
-      55: { desc: 'Heavy Drizzle', icon: 'CloudDrizzle', score: 2 }, 56: { desc: 'Freezing Drizzle', icon: 'Snowflake', score: 1 },
-      61: { desc: 'Light Rain', icon: 'CloudRain', score: 3 }, 63: { desc: 'Rain', icon: 'CloudRain', score: 2 },
-      65: { desc: 'Heavy Rain', icon: 'CloudRain', score: 1 }, 66: { desc: 'Freezing Rain', icon: 'Snowflake', score: 1 },
-      71: { desc: 'Light Snow', icon: 'Snowflake', score: 3 }, 73: { desc: 'Snow', icon: 'Snowflake', score: 2 },
-      75: { desc: 'Heavy Snow', icon: 'Snowflake', score: 1 }, 77: { desc: 'Snow Grains', icon: 'Snowflake', score: 2 },
-      80: { desc: 'Light Showers', icon: 'CloudRain', score: 3 }, 81: { desc: 'Showers', icon: 'CloudRain', score: 2 },
-      82: { desc: 'Heavy Showers', icon: 'CloudRain', score: 1 }, 85: { desc: 'Snow Showers', icon: 'Snowflake', score: 2 },
-      95: { desc: 'Thunderstorm', icon: 'CloudLightning', score: 1 }, 96: { desc: 'Hail Storm', icon: 'CloudLightning', score: 0 },
-      99: { desc: 'Severe Storm', icon: 'CloudLightning', score: 0 }
-    };
-    const getWeather = (code) => weatherCodes[code] || { desc: 'Unknown', icon: 'Cloud', score: 3 };
+    const wxCodes = {0:{d:'Clear',i:'Sun',s:1},1:{d:'Clear',i:'Sun',s:.9},2:{d:'Cloudy',i:'CloudSun',s:.7},3:{d:'Overcast',i:'Cloud',s:.5},45:{d:'Fog',i:'CloudFog',s:.4},51:{d:'Drizzle',i:'CloudDrizzle',s:.5},61:{d:'Rain',i:'CloudRain',s:.4},63:{d:'Rain',i:'CloudRain',s:.3},65:{d:'Heavy Rain',i:'CloudRain',s:.2},71:{d:'Snow',i:'Snowflake',s:.5},73:{d:'Snow',i:'Snowflake',s:.4},80:{d:'Showers',i:'CloudRain',s:.4},95:{d:'Storm',i:'CloudLightning',s:.1}};
+    const getWx = c => wxCodes[c] || {d:'?',i:'Cloud',s:.5};
+    const aqiColor = a => a <= 25 ? 'text-green-500' : a <= 50 ? 'text-yellow-500' : a <= 75 ? 'text-orange-500' : 'text-red-500';
+    const pollenColor = l => l <= 1 ? 'text-green-500' : l <= 2 ? 'text-yellow-500' : l <= 3 ? 'text-orange-500' : 'text-red-500';
 
     const Icon = ({ name, size = 24, className = "" }) => {
       const ref = React.useRef(null);
-      useEffect(() => {
-        if (ref.current && lucide.icons[name]) {
-          ref.current.innerHTML = '';
-          const icon = lucide.createElement(lucide.icons[name]);
-          icon.setAttribute('width', size);
-          icon.setAttribute('height', size);
-          if (className) icon.setAttribute('class', className);
-          ref.current.appendChild(icon);
-        }
-      }, [name, size, className]);
+      useEffect(() => { if (ref.current && lucide.icons[name]) { ref.current.innerHTML = ''; const i = lucide.createElement(lucide.icons[name]); i.setAttribute('width', size); i.setAttribute('height', size); if (className) i.setAttribute('class', className); ref.current.appendChild(i); }}, [name, size, className]);
       return <span ref={ref} className="inline-flex items-center justify-center" />;
     };
 
+    const Toggle = ({ checked, onChange, label }) => (
+      <div className="flex items-center justify-between py-2">
+        <span className="text-sm dark:text-gray-200">{label}</span>
+        <label className="toggle"><input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} /><span className="slider"></span></label>
+      </div>
+    );
+
+    const BASE_W = { sleep: .20, mood: .15, energy: .15, steps: .10, activeCalories: .08, workout: .08, mindfulness: .06, water: .05, hrv: .08, coldPlunge: .03, sauna: .02, alcohol: -.15, screenTime: -.05, sickness: -.20 };
+
     const App = () => {
+      const [dark, setDark] = useState(() => localStorage.getItem('ht-dark') === 'true');
       const [tab, setTab] = useState('dashboard');
       const [entries, setEntries] = useState([]);
       const [modal, setModal] = useState(null);
-      const [metric, setMetric] = useState(null);
+      const [detail, setDetail] = useState(null);
+      const [scoreView, setScoreView] = useState(null);
+      const [scoreRange, setScoreRange] = useState('today');
       const [range, setRange] = useState('30d');
       const [loading, setLoading] = useState(true);
       const [weather, setWeather] = useState(null);
-      const [locationName, setLocationName] = useState('...');
-      const [moon, setMoon] = useState(getMoonPhase());
+      const [aqi, setAqi] = useState(null);
+      const [pollen, setPollen] = useState(null);
+      const [locName, setLocName] = useState('...');
+      const [moon, setMoon] = useState(getMoon());
       const [settings, setSettings] = useState(false);
       const [trakt, setTrakt] = useState({ clientId: '', token: '' });
       const [corr1, setCorr1] = useState('');
       const [corr2, setCorr2] = useState('');
       const [customCorr, setCustomCorr] = useState(null);
+      const [toggles, setToggles] = useState({ work: isWeekday(), vacation: false, workTravel: false, sickness: false, masturbation: true, sexualActivity: false });
+
+      useEffect(() => {
+        if (dark) document.documentElement.classList.add('dark');
+        else document.documentElement.classList.remove('dark');
+        localStorage.setItem('ht-dark', dark);
+      }, [dark]);
 
       const types = {
-        sauna: { icon: 'Thermometer', color: 'bg-orange-500', label: 'Sauna', cat: 'wellness', unit: 'min', field: 'duration', fields: ['duration', 'temperature'] },
-        coldPlunge: { icon: 'Droplet', color: 'bg-blue-500', label: 'Cold Plunge', cat: 'wellness', unit: 'min', field: 'duration', fields: ['duration', 'temperature'] },
-        workout: { icon: 'Dumbbell', color: 'bg-green-500', label: 'Workout', cat: 'fitness', unit: 'min', field: 'duration' },
-        steps: { icon: 'Footprints', color: 'bg-teal-500', label: 'Steps', cat: 'fitness', unit: 'steps', field: 'value' },
-        activeCalories: { icon: 'Flame', color: 'bg-orange-600', label: 'Active Cal', cat: 'fitness', unit: 'kcal', field: 'value' },
-        exerciseMinutes: { icon: 'Zap', color: 'bg-lime-500', label: 'Exercise', cat: 'fitness', unit: 'min', field: 'value' },
-        distance: { icon: 'MapPin', color: 'bg-emerald-600', label: 'Distance', cat: 'fitness', unit: 'km', field: 'value' },
-        sleep: { icon: 'Moon', color: 'bg-indigo-500', label: 'Sleep', cat: 'vitals', unit: 'hrs', field: 'value' },
-        heartRate: { icon: 'Heart', color: 'bg-red-500', label: 'Heart Rate', cat: 'vitals', unit: 'bpm', field: 'value' },
-        restingHR: { icon: 'Heart', color: 'bg-pink-500', label: 'Resting HR', cat: 'vitals', unit: 'bpm', field: 'value' },
-        hrv: { icon: 'Activity', color: 'bg-purple-600', label: 'HRV', cat: 'vitals', unit: 'ms', field: 'value' },
-        weight: { icon: 'Scale', color: 'bg-slate-600', label: 'Weight', cat: 'vitals', unit: 'kg', field: 'value' },
-        water: { icon: 'Droplet', color: 'bg-cyan-500', label: 'Water', cat: 'nutrition', unit: 'ml', field: 'quantity' },
-        coffee: { icon: 'Coffee', color: 'bg-amber-700', label: 'Coffee', cat: 'nutrition', unit: 'cups', field: 'quantity' },
-        alcohol: { icon: 'Wine', color: 'bg-purple-500', label: 'Alcohol', cat: 'nutrition', unit: 'drinks', field: 'quantity' },
-        mood: { icon: 'Smile', color: 'bg-yellow-500', label: 'Mood', cat: 'mental', unit: '', field: 'mood' },
-        energy: { icon: 'Battery', color: 'bg-amber-500', label: 'Energy', cat: 'mental', unit: '', field: 'energy' },
-        mindfulness: { icon: 'Brain', color: 'bg-violet-500', label: 'Mindfulness', cat: 'mental', unit: 'min', field: 'value' },
-        workHours: { icon: 'Briefcase', color: 'bg-gray-700', label: 'Work Hours', cat: 'productivity', unit: 'hrs', field: 'duration' },
-        meetings: { icon: 'Users', color: 'bg-blue-700', label: 'Meetings', cat: 'productivity', unit: '', field: 'count' },
-        masturbation: { icon: 'Heart', color: 'bg-pink-400', label: 'Masturbation', cat: 'lifestyle', unit: '', field: 'value', simple: true },
-        sexualActivity: { icon: 'Heart', color: 'bg-red-400', label: 'Sexual Activity', cat: 'lifestyle', unit: '', field: 'value', simple: true },
-        vacation: { icon: 'Palmtree', color: 'bg-green-400', label: 'Vacation', cat: 'lifestyle', unit: '', field: 'value', simple: true },
-        weather: { icon: 'Sun', color: 'bg-yellow-400', label: 'Weather', cat: 'auto', unit: '°C', field: 'temperature', auto: true },
-        sunshine: { icon: 'Sun', color: 'bg-amber-400', label: 'Sunshine', cat: 'auto', unit: 'hrs', field: 'value', auto: true },
-        moonPhase: { icon: 'Moon', color: 'bg-gray-500', label: 'Moon Phase', cat: 'auto', unit: '%', field: 'illumination', auto: true },
-        location: { icon: 'MapPin', color: 'bg-blue-600', label: 'Location', cat: 'auto', unit: '', field: 'name', auto: true },
-        billsGame: { icon: 'Trophy', color: 'bg-blue-800', label: 'Bills Game', cat: 'auto', unit: '', field: 'won', auto: true },
-        tvWatched: { icon: 'Tv', color: 'bg-purple-700', label: 'TV (Trakt)', cat: 'entertainment', unit: 'ep', field: 'value', auto: true },
-        movieWatched: { icon: 'Film', color: 'bg-indigo-700', label: 'Movie (Trakt)', cat: 'entertainment', unit: '', field: 'value', auto: true },
+        sauna:{icon:'Flame',color:'bg-orange-500',label:'Sauna',cat:'wellness',unit:'min',field:'duration',fields:['duration','temperature']},
+        coldPlunge:{icon:'Snowflake',color:'bg-cyan-500',label:'Cold Plunge',cat:'wellness',unit:'min',field:'duration',fields:['duration','temperature']},
+        workout:{icon:'Dumbbell',color:'bg-green-500',label:'Workout',cat:'fitness',unit:'min',field:'duration'},
+        steps:{icon:'Footprints',color:'bg-teal-500',label:'Steps',cat:'fitness',field:'value'},
+        activeCalories:{icon:'Flame',color:'bg-orange-600',label:'Calories',cat:'fitness',unit:'kcal',field:'value'},
+        exerciseMinutes:{icon:'Zap',color:'bg-lime-500',label:'Exercise',cat:'fitness',unit:'min',field:'value'},
+        distance:{icon:'Map',color:'bg-emerald-600',label:'Distance',cat:'fitness',unit:'km',field:'value'},
+        sleep:{icon:'Moon',color:'bg-indigo-500',label:'Sleep',cat:'vitals',unit:'hrs',field:'value'},
+        heartRate:{icon:'Heart',color:'bg-red-500',label:'HR',cat:'vitals',unit:'bpm',field:'value'},
+        restingHR:{icon:'Heart',color:'bg-pink-500',label:'RHR',cat:'vitals',unit:'bpm',field:'value'},
+        hrv:{icon:'Activity',color:'bg-purple-600',label:'HRV',cat:'vitals',unit:'ms',field:'value'},
+        weight:{icon:'Scale',color:'bg-slate-600',label:'Weight',cat:'vitals',unit:'kg',field:'value'},
+        screenTime:{icon:'Smartphone',color:'bg-gray-600',label:'Screen',cat:'vitals',unit:'hrs',field:'value'},
+        water:{icon:'Droplet',color:'bg-blue-500',label:'Water',cat:'nutrition',unit:'ml',field:'quantity'},
+        coffee:{icon:'Coffee',color:'bg-amber-700',label:'Coffee',cat:'nutrition',unit:'cups',field:'quantity'},
+        alcohol:{icon:'Wine',color:'bg-purple-500',label:'Alcohol',cat:'nutrition',unit:'drinks',field:'quantity'},
+        mood:{icon:'Smile',color:'bg-yellow-500',label:'Mood',cat:'mental',field:'mood'},
+        energy:{icon:'Battery',color:'bg-amber-500',label:'Energy',cat:'mental',field:'energy'},
+        mindfulness:{icon:'Brain',color:'bg-violet-500',label:'Mindful',cat:'mental',unit:'min',field:'value'},
+        work:{icon:'Briefcase',color:'bg-gray-700',label:'Work',cat:'daily',toggle:true},
+        vacation:{icon:'Palmtree',color:'bg-green-400',label:'Vacation',cat:'daily',toggle:true},
+        workTravel:{icon:'Plane',color:'bg-blue-600',label:'Travel',cat:'daily',toggle:true},
+        sickness:{icon:'Thermometer',color:'bg-red-400',label:'Sick',cat:'daily',toggle:true},
+        masturbation:{icon:'Heart',color:'bg-pink-400',label:'Masturbation',cat:'lifestyle',toggle:true},
+        sexualActivity:{icon:'Heart',color:'bg-red-400',label:'Sex',cat:'lifestyle',toggle:true},
+        weather:{icon:'Sun',color:'bg-yellow-400',label:'Weather',cat:'env',auto:true},
+        sunshine:{icon:'Sun',color:'bg-amber-400',label:'Sun',cat:'env',unit:'hrs',auto:true},
+        wind:{icon:'Wind',color:'bg-sky-400',label:'Wind',cat:'env',unit:'km/h',auto:true},
+        moonPhase:{icon:'Moon',color:'bg-gray-500',label:'Moon',cat:'env',auto:true},
+        airQuality:{icon:'Wind',color:'bg-sky-500',label:'AQI',cat:'env',auto:true},
+        pollenCount:{icon:'Flower2',color:'bg-yellow-500',label:'Pollen',cat:'env',auto:true},
+        billsGame:{icon:'Trophy',color:'bg-blue-800',label:'Bills',cat:'sports',auto:true},
       };
 
-      const moodNum = m => ({ great: 5, good: 4, neutral: 3, low: 2, bad: 1 }[m] || 3);
-      const energyNum = e => ({ 'very-high': 5, high: 4, medium: 3, low: 2, 'very-low': 1 }[e] || 3);
-      const numMood = n => n >= 4.5 ? '😄' : n >= 3.5 ? '🙂' : n >= 2.5 ? '😐' : n >= 1.5 ? '😕' : '😢';
-      const numEnergy = n => n >= 4.5 ? '⚡' : n >= 3.5 ? '🔋' : n >= 2.5 ? '➡️' : n >= 1.5 ? '🔻' : '💤';
+      const moodNum = m => ({great:1,good:.75,neutral:.5,low:.25,bad:0}[m] ?? .5);
+      const energyNum = e => ({'very-high':1,high:.75,medium:.5,low:.25,'very-low':0}[e] ?? .5);
+      const moodEmoji = n => n >= .8 ? '😄' : n >= .6 ? '🙂' : n >= .4 ? '😐' : n >= .2 ? '😕' : '😢';
+      const energyEmoji = n => n >= .8 ? '⚡' : n >= .6 ? '🔋' : n >= .4 ? '➡️' : n >= .2 ? '🔻' : '💤';
+      const norm = (v, min, max) => Math.max(0, Math.min(1, (v - min) / (max - min)));
 
       useEffect(() => {
-        const saved = localStorage.getItem('ht-entries');
-        if (saved) setEntries(JSON.parse(saved));
-        const savedTrakt = localStorage.getItem('ht-trakt');
-        if (savedTrakt) setTrakt(JSON.parse(savedTrakt));
-        setLoading(false);
-        initAutoTracking();
+        const s = localStorage.getItem('ht-v3'); if (s) setEntries(JSON.parse(s));
+        const st = localStorage.getItem('ht-trakt'); if (st) setTrakt(JSON.parse(st));
+        const tog = localStorage.getItem('ht-tog-' + todayKey()); if (tog) setToggles(JSON.parse(tog));
+        setLoading(false); initAuto();
       }, []);
 
-      useEffect(() => {
-        if (!loading) localStorage.setItem('ht-entries', JSON.stringify(entries));
-      }, [entries, loading]);
+      useEffect(() => { if (!loading) localStorage.setItem('ht-v3', JSON.stringify(entries)); }, [entries, loading]);
+      useEffect(() => { localStorage.setItem('ht-tog-' + todayKey(), JSON.stringify(toggles)); }, [toggles]);
 
-      const todayKey = () => getZurichDate().toDateString();
-      const hasToday = (type) => entries.some(e => e.type === type && new Date(e.ts).toDateString() === todayKey());
+      const hasToday = t => entries.some(e => e.type === t && new Date(e.ts).toDateString() === todayKey());
+      const getTodayEntries = () => entries.filter(e => new Date(e.ts).toDateString() === todayKey());
+      const getDayCount = () => new Set(entries.map(e => new Date(e.ts).toDateString())).size;
 
-      const initAutoTracking = async () => {
-        setMoon(getMoonPhase());
-        
-        if (!hasToday('moonPhase')) {
-          const m = getMoonPhase();
-          addEntry({ type: 'moonPhase', illumination: m.illumination, phase: m.name, auto: true });
-        }
-
+      const initAuto = async () => {
+        setMoon(getMoon());
+        if (!hasToday('moonPhase')) { const m = getMoon(); addEntry({type:'moonPhase',illum:m.illum,name:m.name,cyclic:m.cyclic,auto:true}); }
         if (navigator.geolocation) {
           navigator.geolocation.getCurrentPosition(async pos => {
-            const { latitude: lat, longitude: lon } = pos.coords;
-            const locName = getLocationName(lat, lon);
-            setLocationName(locName);
-            
-            if (!hasToday('location')) {
-              addEntry({ type: 'location', name: locName, lat, lon, auto: true });
-            }
-
+            const {latitude:lat,longitude:lon} = pos.coords;
+            const ln = getLocName(lat, lon); setLocName(ln);
+            if (!hasToday('location')) addEntry({type:'location',name:ln,lat,lon,auto:true});
             try {
-              const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&daily=sunshine_duration&timezone=Europe/Zurich`);
-              const data = await res.json();
-              setWeather(data);
-              
-              if (!hasToday('weather') && data.current) {
-                addEntry({ type: 'weather', temperature: data.current.temperature_2m, humidity: data.current.relative_humidity_2m, code: data.current.weather_code, wind: data.current.wind_speed_10m, auto: true });
-              }
-              if (!hasToday('sunshine') && data.daily?.sunshine_duration?.[0]) {
-                addEntry({ type: 'sunshine', value: Math.round(data.daily.sunshine_duration[0] / 360) / 10, auto: true });
-              }
-            } catch (e) { console.error('Weather error:', e); }
-          }, () => setLocationName('Unknown'));
+              const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,wind_speed_10m&daily=sunshine_duration&timezone=Europe/Zurich`);
+              const d = await r.json(); setWeather(d);
+              if (!hasToday('weather') && d.current) { addEntry({type:'weather',temp:d.current.temperature_2m,code:d.current.weather_code,auto:true}); addEntry({type:'wind',value:d.current.wind_speed_10m,auto:true}); }
+              if (!hasToday('sunshine') && d.daily?.sunshine_duration?.[0]) addEntry({type:'sunshine',value:Math.round(d.daily.sunshine_duration[0]/360)/10,auto:true});
+            } catch(e){}
+            try {
+              const ar = await fetch(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=european_aqi,pm10,pm2_5&timezone=Europe/Zurich`);
+              const ad = await ar.json(); setAqi(ad.current);
+              if (!hasToday('airQuality') && ad.current) addEntry({type:'airQuality',aqi:ad.current.european_aqi,auto:true});
+            } catch(e){}
+            try {
+              const pr = await fetch(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=grass_pollen,birch_pollen,alder_pollen&timezone=Europe/Zurich`);
+              const pd = await pr.json();
+              if (pd.current) { const mx = Math.max(pd.current.grass_pollen||0,pd.current.birch_pollen||0,pd.current.alder_pollen||0); const lv = mx>100?4:mx>50?3:mx>20?2:mx>0?1:0; setPollen({level:lv,max:mx}); if (!hasToday('pollenCount')) addEntry({type:'pollenCount',level:lv,auto:true}); }
+            } catch(e){}
+          }, () => setLocName('Unknown'));
         }
-
-        fetchBillsGame();
-      };
-
-      const fetchBillsGame = async () => {
         try {
-          const res = await fetch('https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/buf/schedule');
-          const data = await res.json();
-          const completed = data.events?.filter(e => e.competitions?.[0]?.status?.type?.completed) || [];
-          if (completed.length > 0) {
-            const last = completed[completed.length - 1];
-            const comp = last.competitions[0];
-            const bills = comp.competitors.find(c => c.team.abbreviation === 'BUF');
-            const opp = comp.competitors.find(c => c.team.abbreviation !== 'BUF');
-            if (bills && opp) {
-              const won = parseInt(bills.score) > parseInt(opp.score);
-              const gameDate = new Date(last.date).toDateString();
-              const hasGame = entries.some(e => e.type === 'billsGame' && new Date(e.ts).toDateString() === gameDate);
-              if (!hasGame) {
-                addEntry({ type: 'billsGame', won: won ? 1 : 0, score: `${bills.score}-${opp.score}`, opponent: opp.team.displayName, auto: true, ts: new Date(last.date).toISOString() });
-              }
-            }
-          }
-        } catch (e) { console.error('Bills error:', e); }
+          const br = await fetch('https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/buf/schedule');
+          const bd = await br.json();
+          const comp = bd.events?.filter(e => e.competitions?.[0]?.status?.type?.completed) || [];
+          if (comp.length) { const last = comp[comp.length-1], c = last.competitions[0], bills = c.competitors.find(x => x.team.abbreviation === 'BUF'), opp = c.competitors.find(x => x.team.abbreviation !== 'BUF');
+            if (bills && opp) { const won = parseInt(bills.score) > parseInt(opp.score), gd = new Date(last.date).toDateString();
+              if (!entries.some(e => e.type === 'billsGame' && new Date(e.ts).toDateString() === gd)) addEntry({type:'billsGame',won:won?1:0,score:`${bills.score}-${opp.score}`,opp:opp.team.displayName,auto:true,ts:new Date(last.date).toISOString()}); }}
+        } catch(e){}
       };
 
-      const addEntry = (data) => {
-        const entry = { id: Date.now() + Math.random(), ts: data.ts || new Date().toISOString(), ...data };
-        setEntries(prev => [entry, ...prev]);
-      };
-      const delEntry = (id) => setEntries(prev => prev.filter(e => e.id !== id));
+      const addEntry = d => setEntries(prev => [{id:Date.now()+Math.random(),ts:d.ts||new Date().toISOString(),...d},...prev]);
+      const delEntry = id => setEntries(prev => prev.filter(e => e.id !== id));
+      const saveToggle = (t, v) => { setEntries(prev => prev.filter(e => !(e.type === t && new Date(e.ts).toDateString() === todayKey()))); addEntry({type:t,value:v?1:0}); };
+      const handleToggle = (t, v) => { const nt = {...toggles,[t]:v}; if (t === 'vacation' && v) nt.work = false; setToggles(nt); saveToggle(t,v); if (t === 'vacation' && v) saveToggle('work',false); };
 
-      const getFiltered = (type, r = range) => {
-        const now = getZurichDate();
-        let start = new Date(now);
-        if (r === '7d') start.setDate(now.getDate() - 7);
-        else if (r === '30d') start.setDate(now.getDate() - 30);
-        else if (r === '90d') start.setDate(now.getDate() - 90);
-        else start = new Date(0);
-        return entries.filter(e => e.type === type && new Date(e.ts) >= start).sort((a, b) => new Date(a.ts) - new Date(b.ts));
-      };
-
-      const getDailyData = () => {
+      const getDailyData = useCallback(() => {
         const daily = {};
         entries.forEach(e => {
           const day = new Date(e.ts).toDateString();
-          if (!daily[day]) daily[day] = {};
-          const t = types[e.type];
-          if (!t) return;
-          
-          let val;
-          if (e.type === 'mood') val = moodNum(e.mood);
-          else if (e.type === 'energy') val = energyNum(e.energy);
-          else if (e.type === 'weather') { daily[day].weatherScore = getWeather(e.code).score; daily[day].temperature = e.temperature; daily[day].wind = e.wind; return; }
-          else if (e.type === 'moonPhase') { daily[day].moonIllum = e.illumination; return; }
-          else if (e.type === 'location') { daily[day].atWork = e.name === 'Work' ? 1 : 0; daily[day].atHome = e.name === 'Home' ? 1 : 0; return; }
-          else if (e.type === 'billsGame') { daily[day].billsWon = e.won; return; }
-          else if (t.simple) val = 1;
-          else val = parseFloat(e[t.field]) || 0;
-
-          const sum = ['steps', 'activeCalories', 'exerciseMinutes', 'water', 'coffee', 'alcohol', 'mindfulness', 'workHours', 'meetings', 'sauna', 'coldPlunge', 'workout', 'distance', 'masturbation', 'sexualActivity', 'tvWatched', 'movieWatched'].includes(e.type);
-          if (sum) daily[day][e.type] = (daily[day][e.type] || 0) + val;
-          else {
-            if (!daily[day][e.type]) daily[day][e.type] = { s: 0, n: 0 };
-            daily[day][e.type].s += val;
-            daily[day][e.type].n++;
+          if (!daily[day]) daily[day] = {raw:{},norm:{}};
+          const d = daily[day];
+          switch(e.type) {
+            case 'mood': d.raw.mood = moodNum(e.mood); d.norm.mood = d.raw.mood; break;
+            case 'energy': d.raw.energy = energyNum(e.energy); d.norm.energy = d.raw.energy; break;
+            case 'sleep': d.raw.sleep = parseFloat(e.value)||0; d.norm.sleep = norm(d.raw.sleep,4,9); break;
+            case 'hrv': d.raw.hrv = parseFloat(e.value)||0; d.norm.hrv = norm(d.raw.hrv,20,80); break;
+            case 'restingHR': d.raw.rhr = parseFloat(e.value)||0; d.norm.rhr = 1-norm(d.raw.rhr,50,90); break;
+            case 'steps': d.raw.steps = (d.raw.steps||0)+(parseFloat(e.value)||0); d.norm.steps = norm(d.raw.steps,0,12000); break;
+            case 'activeCalories': d.raw.cal = (d.raw.cal||0)+(parseFloat(e.value)||0); d.norm.cal = norm(d.raw.cal,0,600); break;
+            case 'workout': d.raw.workout = (d.raw.workout||0)+(parseFloat(e.duration)||0); d.norm.workout = norm(d.raw.workout,0,90); break;
+            case 'exerciseMinutes': d.raw.exercise = (d.raw.exercise||0)+(parseFloat(e.value)||0); d.norm.exercise = norm(d.raw.exercise,0,60); break;
+            case 'water': d.raw.water = (d.raw.water||0)+(parseFloat(e.quantity)||0); d.norm.water = norm(d.raw.water,0,3000); break;
+            case 'coffee': d.raw.coffee = (d.raw.coffee||0)+(parseFloat(e.quantity)||0); d.norm.coffee = norm(d.raw.coffee,0,5); break;
+            case 'alcohol': d.raw.alcohol = (d.raw.alcohol||0)+(parseFloat(e.quantity)||0); d.norm.alcohol = norm(d.raw.alcohol,0,5); break;
+            case 'mindfulness': d.raw.mindful = (d.raw.mindful||0)+(parseFloat(e.value)||0); d.norm.mindful = norm(d.raw.mindful,0,30); break;
+            case 'screenTime': d.raw.screen = parseFloat(e.value)||0; d.norm.screen = norm(d.raw.screen,0,8); break;
+            case 'sauna': d.raw.sauna = (d.raw.sauna||0)+(parseFloat(e.duration)||0); d.norm.sauna = norm(d.raw.sauna,0,30); break;
+            case 'coldPlunge': d.raw.cold = (d.raw.cold||0)+(parseFloat(e.duration)||0); d.norm.cold = norm(d.raw.cold,0,10); break;
+            case 'weather': d.raw.wxScore = getWx(e.code).s; d.norm.wx = d.raw.wxScore; d.raw.temp = e.temp; break;
+            case 'wind': d.raw.wind = parseFloat(e.value)||0; d.norm.wind = 1-norm(d.raw.wind,0,50); break;
+            case 'sunshine': d.raw.sun = parseFloat(e.value)||0; d.norm.sun = norm(d.raw.sun,0,14); break;
+            case 'moonPhase': d.raw.moonCyc = e.cyclic; d.norm.moon = e.cyclic; d.raw.moonIllum = e.illum; break;
+            case 'airQuality': d.raw.aqi = e.aqi; d.norm.aqi = 1-norm(e.aqi,0,100); break;
+            case 'pollenCount': d.raw.pollen = e.level; d.norm.pollen = 1-norm(e.level,0,4); break;
+            case 'work': d.raw.work = e.value; break;
+            case 'vacation': d.raw.vacation = e.value; break;
+            case 'workTravel': d.raw.travel = e.value; break;
+            case 'sickness': d.raw.sick = e.value; break;
           }
-          if (e.type === 'vacation') daily[day].isVacation = 1;
-        });
-        
-        Object.values(daily).forEach(d => {
-          Object.keys(d).forEach(k => {
-            if (d[k]?.n) d[k] = d[k].s / d[k].n;
-          });
         });
         return daily;
-      };
-
-      const calcCorr = (x, y) => {
-        if (x.length < 5) return null;
-        const n = x.length;
-        const sx = x.reduce((a, b) => a + b, 0), sy = y.reduce((a, b) => a + b, 0);
-        const sxy = x.reduce((a, xi, i) => a + xi * y[i], 0);
-        const sx2 = x.reduce((a, xi) => a + xi * xi, 0), sy2 = y.reduce((a, yi) => a + yi * yi, 0);
-        const num = n * sxy - sx * sy;
-        const den = Math.sqrt((n * sx2 - sx * sx) * (n * sy2 - sy * sy));
-        return den === 0 ? null : num / den;
-      };
-
-      const correlations = useMemo(() => {
-        const daily = getDailyData();
-        const days = Object.keys(daily);
-        const pairs = [
-          ['alcohol', 'mood'], ['alcohol', 'energy'], ['alcohol', 'sleep'], ['alcohol', 'hrv'],
-          ['coffee', 'energy'], ['coffee', 'mood'], ['coffee', 'sleep'],
-          ['workHours', 'energy'], ['workHours', 'mood'], ['workHours', 'sleep'],
-          ['meetings', 'energy'], ['meetings', 'mood'],
-          ['workout', 'mood'], ['workout', 'energy'], ['workout', 'sleep'],
-          ['exerciseMinutes', 'mood'], ['exerciseMinutes', 'energy'],
-          ['steps', 'mood'], ['steps', 'energy'], ['steps', 'sleep'],
-          ['sleep', 'mood'], ['sleep', 'energy'], ['sleep', 'hrv'],
-          ['sauna', 'mood'], ['sauna', 'sleep'], ['sauna', 'hrv'],
-          ['coldPlunge', 'mood'], ['coldPlunge', 'energy'], ['coldPlunge', 'hrv'],
-          ['water', 'energy'], ['water', 'mood'],
-          ['mindfulness', 'mood'], ['mindfulness', 'energy'], ['mindfulness', 'sleep'],
-          ['weatherScore', 'mood'], ['weatherScore', 'energy'], ['weatherScore', 'steps'],
-          ['temperature', 'mood'], ['temperature', 'energy'], ['temperature', 'sleep'],
-          ['sunshine', 'mood'], ['sunshine', 'energy'],
-          ['moonIllum', 'mood'], ['moonIllum', 'energy'], ['moonIllum', 'sleep'],
-          ['masturbation', 'mood'], ['masturbation', 'energy'], ['masturbation', 'sleep'],
-          ['sexualActivity', 'mood'], ['sexualActivity', 'energy'], ['sexualActivity', 'sleep'],
-          ['isVacation', 'mood'], ['isVacation', 'energy'], ['isVacation', 'sleep'], ['isVacation', 'hrv'],
-          ['billsWon', 'mood'], ['billsWon', 'energy'], ['billsWon', 'alcohol'],
-          ['atWork', 'mood'], ['atWork', 'energy'], ['atWork', 'steps'],
-          ['wind', 'mood'], ['wind', 'energy'],
-          ['tvWatched', 'mood'], ['tvWatched', 'sleep'],
-        ];
-        
-        const results = [];
-        pairs.forEach(([cause, effect]) => {
-          const xs = [], ys = [];
-          days.forEach(d => {
-            if (daily[d][cause] !== undefined && daily[d][effect] !== undefined) {
-              xs.push(daily[d][cause]);
-              ys.push(daily[d][effect]);
-            }
-          });
-          if (xs.length >= 5) {
-            const c = calcCorr(xs, ys);
-            if (c !== null && Math.abs(c) >= 0.15) {
-              results.push({
-                cause, effect, corr: Math.round(c * 100) / 100, n: xs.length,
-                strength: Math.abs(c) >= 0.7 ? 'strong' : Math.abs(c) >= 0.4 ? 'moderate' : 'weak',
-                dir: c > 0 ? 'positive' : 'negative'
-              });
-            }
-          }
-        });
-        return results.sort((a, b) => Math.abs(b.corr) - Math.abs(a.corr));
       }, [entries]);
 
-      const findCustomCorr = () => {
-        if (!corr1 || !corr2) return;
-        const daily = getDailyData();
-        const xs = [], ys = [];
-        Object.keys(daily).forEach(d => {
-          if (daily[d][corr1] !== undefined && daily[d][corr2] !== undefined) {
-            xs.push(daily[d][corr1]);
-            ys.push(daily[d][corr2]);
+      const calcCorr = useCallback(() => {
+        const daily = getDailyData(), days = Object.keys(daily);
+        if (days.length < COLD_START_DAYS) return {};
+        const pearson = (x, y) => { if (x.length < 5) return 0; const n = x.length, sx = x.reduce((a,b)=>a+b,0), sy = y.reduce((a,b)=>a+b,0), sxy = x.reduce((a,xi,i)=>a+xi*y[i],0), sx2 = x.reduce((a,xi)=>a+xi*xi,0), sy2 = y.reduce((a,yi)=>a+yi*yi,0); const den = Math.sqrt((n*sx2-sx*sx)*(n*sy2-sy*sy)); return den === 0 ? 0 : (n*sxy-sx*sy)/den; };
+        const corrs = {}, metrics = ['mood','energy','sleep','hrv','steps','workout','alcohol','coffee','mindful','wx','pollen','aqi','moon','screen','water'];
+        ['mood','energy'].forEach(out => { metrics.forEach(inp => { if (inp === out) return; const xs = [], ys = []; days.forEach(d => { if (daily[d].norm[inp] !== undefined && daily[d].norm[out] !== undefined) { xs.push(daily[d].norm[inp]); ys.push(daily[d].norm[out]); }}); corrs[`${inp}_${out}`] = pearson(xs, ys); }); });
+        return corrs;
+      }, [getDailyData]);
+
+      const getWeights = useCallback(() => {
+        if (getDayCount() < COLD_START_DAYS) return {...BASE_W, personalized: false};
+        const corrs = calcCorr(), w = {...BASE_W, personalized: true};
+        Object.entries(corrs).forEach(([k, c]) => { const [inp] = k.split('_'); if (Math.abs(c) > .3 && w[inp] !== undefined) w[inp] = BASE_W[inp] * (1 + Math.abs(c)); });
+        return w;
+      }, [getDayCount, calcCorr]);
+
+      const calcScores = useCallback((data, w) => {
+        const {norm:n, raw:r} = data;
+        let well = 50, stress = 50;
+        const wb = [], sb = [];
+        if (n.sleep !== undefined) { const i = (n.sleep-.5)*30; well += i; wb.push({n:'Sleep',i:Math.round(i),r:r.sleep+'h'}); }
+        if (n.mood !== undefined) { const i = (n.mood-.5)*25; well += i; wb.push({n:'Mood',i:Math.round(i),r:moodEmoji(n.mood)}); }
+        if (n.energy !== undefined) { const i = (n.energy-.5)*25; well += i; wb.push({n:'Energy',i:Math.round(i),r:energyEmoji(n.energy)}); }
+        if (n.steps !== undefined) { const i = n.steps*15; well += i; wb.push({n:'Steps',i:Math.round(i),r:r.steps?.toLocaleString()}); }
+        if (n.workout !== undefined && n.workout > 0) { const i = n.workout*12; well += i; wb.push({n:'Workout',i:Math.round(i),r:r.workout+'min'}); }
+        if (n.cal !== undefined) { const i = n.cal*10; well += i; wb.push({n:'Calories',i:Math.round(i),r:r.cal+'kcal'}); }
+        if (n.hrv !== undefined) { const i = (n.hrv-.5)*15; well += i; wb.push({n:'HRV',i:Math.round(i),r:r.hrv+'ms'}); }
+        if (n.mindful !== undefined && n.mindful > 0) { const i = n.mindful*10; well += i; wb.push({n:'Mindful',i:Math.round(i),r:r.mindful+'min'}); }
+        if (n.water !== undefined) { const i = (n.water-.5)*8; well += i; wb.push({n:'Water',i:Math.round(i),r:r.water+'ml'}); }
+        if (n.cold !== undefined && n.cold > 0) { const i = n.cold*8; well += i; wb.push({n:'Cold',i:Math.round(i),r:r.cold+'min'}); }
+        if (n.sauna !== undefined && n.sauna > 0) { const i = n.sauna*6; well += i; wb.push({n:'Sauna',i:Math.round(i),r:r.sauna+'min'}); }
+        if (r.vacation) { well += 12; wb.push({n:'Vacation',i:12}); }
+        if (n.alcohol !== undefined && n.alcohol > 0) { const i = -n.alcohol*20; well += i; wb.push({n:'Alcohol',i:Math.round(i),r:r.alcohol+' drinks'}); }
+        if (n.screen !== undefined && n.screen > .5) { const i = -(n.screen-.5)*10; well += i; wb.push({n:'Screen',i:Math.round(i),r:r.screen+'h'}); }
+        if (r.sick) { well -= 25; wb.push({n:'Sick',i:-25}); }
+        if (n.hrv !== undefined) { const i = -(n.hrv-.5)*25; stress += i; sb.push({n:'HRV',i:Math.round(i)}); }
+        if (n.rhr !== undefined) { const i = -(n.rhr-.5)*20; stress += i; sb.push({n:'RHR',i:Math.round(i)}); }
+        if (n.sleep !== undefined) { const i = -(n.sleep-.5)*20; stress += i; sb.push({n:'Sleep',i:Math.round(i)}); }
+        if (r.work) { stress += 12; sb.push({n:'Work',i:12}); }
+        if (r.travel) { stress += 18; sb.push({n:'Travel',i:18}); }
+        if (r.sick) { stress += 20; sb.push({n:'Sick',i:20}); }
+        if (n.pollen !== undefined && n.pollen < .5) { const i = (.5-n.pollen)*15; stress += i; sb.push({n:'Pollen',i:Math.round(i)}); }
+        if (n.aqi !== undefined && n.aqi < .5) { const i = (.5-n.aqi)*12; stress += i; sb.push({n:'AQI',i:Math.round(i)}); }
+        if (n.coffee !== undefined && n.coffee > .6) { const i = (n.coffee-.6)*15; stress += i; sb.push({n:'Caffeine',i:Math.round(i)}); }
+        if (n.mindful !== undefined && n.mindful > 0) { const i = -n.mindful*18; stress += i; sb.push({n:'Mindful',i:Math.round(i)}); }
+        if ((n.exercise||0) > 0 || (n.workout||0) > 0) { const i = -Math.max(n.exercise||0,n.workout||0)*20; stress += i; sb.push({n:'Exercise',i:Math.round(i)}); }
+        if (r.vacation) { stress -= 25; sb.push({n:'Vacation',i:-25}); }
+        return { well: Math.max(0,Math.min(100,Math.round(well))), stress: Math.max(0,Math.min(100,Math.round(stress))), wb: wb.sort((a,b)=>b.i-a.i), sb: sb.sort((a,b)=>b.i-a.i) };
+      }, []);
+
+      const todayScores = useMemo(() => {
+        const daily = getDailyData(), w = getWeights();
+        if (!daily[todayKey()]) return {well:50,stress:50,wb:[],sb:[],personalized:w.personalized};
+        const s = calcScores(daily[todayKey()], w);
+        return {...s,personalized:w.personalized};
+      }, [getDailyData, getWeights, calcScores]);
+
+      const getHist = useCallback(r => {
+        const daily = getDailyData(), w = getWeights(), now = getZurichDate();
+        let start = new Date(now);
+        if (r === '7d') start.setDate(now.getDate()-7);
+        else if (r === '30d') start.setDate(now.getDate()-30);
+        else if (r === '90d') start.setDate(now.getDate()-90);
+        else start = new Date(0);
+        const scores = [], avgImp = {};
+        Object.entries(daily).forEach(([day, data]) => {
+          if (new Date(day) >= start) {
+            const s = calcScores(data, w);
+            scores.push({day,...s});
+            [...s.wb,...s.sb].forEach(item => { if (!avgImp[item.n]) avgImp[item.n] = {t:0,c:0}; avgImp[item.n].t += item.i; avgImp[item.n].c++; });
           }
         });
-        if (xs.length >= 5) {
-          const c = calcCorr(xs, ys);
-          setCustomCorr({ corr: c, n: xs.length, m1: corr1, m2: corr2 });
-        } else {
-          setCustomCorr({ error: `Need 5+ days, found ${xs.length}`, m1: corr1, m2: corr2 });
-        }
-      };
+        return { scores: scores.sort((a,b)=>new Date(a.day)-new Date(b.day)), avgImp: Object.entries(avgImp).map(([n,d])=>({n,avg:Math.round(d.t/d.c)})).sort((a,b)=>b.avg-a.avg) };
+      }, [getDailyData, getWeights, calcScores]);
 
-      const allMetrics = ['mood', 'energy', 'sleep', 'hrv', 'restingHR', 'heartRate', 'steps', 'exerciseMinutes', 'workout', 'activeCalories', 'water', 'coffee', 'alcohol', 'workHours', 'meetings', 'mindfulness', 'sauna', 'coldPlunge', 'masturbation', 'sexualActivity', 'isVacation', 'weatherScore', 'temperature', 'sunshine', 'moonIllum', 'wind', 'atWork', 'atHome', 'billsWon', 'tvWatched', 'movieWatched', 'weight', 'distance'];
-
-      const calcStress = () => {
-        const today = todayKey();
-        const todayEntries = entries.filter(e => new Date(e.ts).toDateString() === today);
-        let stress = 50;
-        const factors = [];
-        
-        const hrv = todayEntries.filter(e => e.type === 'hrv');
-        if (hrv.length) {
-          const avg = hrv.reduce((s, e) => s + (parseFloat(e.value) || 0), 0) / hrv.length;
-          if (avg < 20) { stress += 25; factors.push('Very low HRV'); }
-          else if (avg < 35) { stress += 15; factors.push('Low HRV'); }
-          else if (avg >= 55) { stress -= 15; factors.push('Excellent HRV'); }
-        }
-        
-        const rhr = todayEntries.filter(e => e.type === 'restingHR');
-        if (rhr.length) {
-          const avg = rhr.reduce((s, e) => s + (parseFloat(e.value) || 0), 0) / rhr.length;
-          if (avg > 75) { stress += 15; factors.push('High resting HR'); }
-          else if (avg < 55) { stress -= 10; factors.push('Low resting HR'); }
-        }
-        
-        const work = todayEntries.filter(e => e.type === 'workHours').reduce((s, e) => s + (parseFloat(e.duration) || 0), 0);
-        if (work > 10) { stress += 20; factors.push('Very long work day'); }
-        else if (work > 8) { stress += 10; factors.push('Long work day'); }
-        
-        const mtg = todayEntries.filter(e => e.type === 'meetings').reduce((s, e) => s + (parseFloat(e.count) || 0), 0);
-        if (mtg > 5) { stress += 15; factors.push('Many meetings'); }
-        else if (mtg > 3) { stress += 8; factors.push('Several meetings'); }
-        
-        const slp = todayEntries.find(e => e.type === 'sleep');
-        if (slp) {
-          const hrs = parseFloat(slp.value) || 0;
-          if (hrs < 5) { stress += 20; factors.push('Very poor sleep'); }
-          else if (hrs < 6) { stress += 12; factors.push('Poor sleep'); }
-          else if (hrs >= 7.5) { stress -= 10; factors.push('Good sleep'); }
-        }
-        
-        const coffee = todayEntries.filter(e => e.type === 'coffee').reduce((s, e) => s + (parseFloat(e.quantity) || 0), 0);
-        if (coffee > 4) { stress += 8; factors.push('High caffeine'); }
-        
-        const exercise = todayEntries.filter(e => e.type === 'exerciseMinutes').reduce((s, e) => s + (parseFloat(e.value) || 0), 0);
-        if (exercise >= 30) { stress -= 15; factors.push('Good exercise'); }
-        
-        const mindful = todayEntries.filter(e => e.type === 'mindfulness').reduce((s, e) => s + (parseFloat(e.value) || 0), 0);
-        if (mindful >= 10) { stress -= 12; factors.push('Mindfulness'); }
-        
-        if (todayEntries.some(e => e.type === 'vacation')) { stress -= 20; factors.push('Vacation day'); }
-        
-        return { score: Math.max(0, Math.min(100, Math.round(stress))), factors };
-      };
-
-      const calcWellness = () => {
-        const today = todayKey();
-        const todayEntries = entries.filter(e => new Date(e.ts).toDateString() === today);
-        let score = 50;
-        const bd = [];
-        
-        // Get dynamic impacts from correlations
-        const weatherCorr = correlations.find(c => c.cause === 'weatherScore' && c.effect === 'mood');
-        const sunCorr = correlations.find(c => c.cause === 'sunshine' && c.effect === 'mood');
-        const moonCorr = correlations.find(c => c.cause === 'moonIllum' && c.effect === 'mood');
-        
-        if (todayEntries.some(e => e.type === 'workout')) { score += 12; bd.push({ f: 'Workout', i: 12, p: true }); }
-        if (todayEntries.some(e => e.type === 'sauna')) { score += 8; bd.push({ f: 'Sauna', i: 8, p: true }); }
-        if (todayEntries.some(e => e.type === 'coldPlunge')) { score += 8; bd.push({ f: 'Cold Plunge', i: 8, p: true }); }
-        
-        const steps = todayEntries.filter(e => e.type === 'steps').reduce((s, e) => s + (parseFloat(e.value) || 0), 0);
-        if (steps >= 10000) { score += 10; bd.push({ f: '10k Steps', i: 10, p: true }); }
-        else if (steps >= 5000) { score += 5; bd.push({ f: '5k Steps', i: 5, p: true }); }
-        
-        const slp = todayEntries.find(e => e.type === 'sleep');
-        if (slp) {
-          const hrs = parseFloat(slp.value) || 0;
-          if (hrs >= 7 && hrs <= 9) { score += 15; bd.push({ f: 'Good Sleep', i: 15, p: true }); }
-          else if (hrs < 6) { score -= 10; bd.push({ f: 'Poor Sleep', i: -10, p: false }); }
-        }
-        
-        const water = todayEntries.filter(e => e.type === 'water').reduce((s, e) => s + (parseFloat(e.quantity) || 0), 0);
-        if (water >= 2000) { score += 8; bd.push({ f: 'Hydrated', i: 8, p: true }); }
-        
-        const alc = todayEntries.filter(e => e.type === 'alcohol').reduce((s, e) => s + (parseFloat(e.quantity) || 0), 0);
-        if (alc > 0) { const pen = Math.min(alc * 6, 15); score -= pen; bd.push({ f: 'Alcohol', i: -pen, p: false }); }
-        
-        if (todayEntries.some(e => e.type === 'vacation')) { score += 10; bd.push({ f: 'Vacation', i: 10, p: true }); }
-        
-        // Dynamic weather impact based on correlations
-        const wx = todayEntries.find(e => e.type === 'weather');
-        if (wx && weatherCorr) {
-          const wxScore = getWeather(wx.code).score;
-          const impact = Math.round((wxScore - 3) * weatherCorr.corr * 3);
-          if (impact !== 0) { score += impact; bd.push({ f: 'Weather', i: impact, p: impact > 0 }); }
-        }
-        
-        // Dynamic sunshine impact
-        const sun = todayEntries.find(e => e.type === 'sunshine');
-        if (sun && sunCorr) {
-          const hrs = parseFloat(sun.value) || 0;
-          const impact = Math.round((hrs - 4) * sunCorr.corr * 2);
-          if (impact !== 0) { score += impact; bd.push({ f: 'Sunshine', i: impact, p: impact > 0 }); }
-        }
-        
-        // Dynamic moon impact
-        const moonE = todayEntries.find(e => e.type === 'moonPhase');
-        if (moonE && moonCorr) {
-          const impact = Math.round((moonE.illumination - 50) / 50 * moonCorr.corr * 3);
-          if (Math.abs(impact) >= 1) { score += impact; bd.push({ f: 'Moon', i: impact, p: impact > 0 }); }
-        }
-        
-        // Bills impact
-        const bills = todayEntries.find(e => e.type === 'billsGame');
-        if (bills) {
-          if (bills.won) { score += 8; bd.push({ f: 'Bills Won! 🏈', i: 8, p: true }); }
-          else { score -= 5; bd.push({ f: 'Bills Lost', i: -5, p: false }); }
-        }
-        
-        return { score: Math.max(0, Math.min(100, Math.round(score))), breakdown: bd };
-      };
-
-      const stress = calcStress();
-      const wellness = calcWellness();
-
-      const todayStats = useMemo(() => {
-        const today = todayKey();
-        const te = entries.filter(e => new Date(e.ts).toDateString() === today);
-        return {
-          steps: te.filter(e => e.type === 'steps').reduce((s, e) => s + (parseFloat(e.value) || 0), 0),
-          cal: te.filter(e => e.type === 'activeCalories').reduce((s, e) => s + (parseFloat(e.value) || 0), 0),
-          exercise: te.filter(e => e.type === 'exerciseMinutes').reduce((s, e) => s + (parseFloat(e.value) || 0), 0),
-          water: te.filter(e => e.type === 'water').reduce((s, e) => s + (parseFloat(e.quantity) || 0), 0),
-        };
+      const todayData = useMemo(() => {
+        const te = getTodayEntries(), d = {};
+        te.forEach(e => {
+          switch(e.type) {
+            case 'steps': d.steps = (d.steps||0)+(parseFloat(e.value)||0); break;
+            case 'activeCalories': d.cal = (d.cal||0)+(parseFloat(e.value)||0); break;
+            case 'exerciseMinutes': d.exercise = (d.exercise||0)+(parseFloat(e.value)||0); break;
+            case 'workout': d.workout = (d.workout||0)+(parseFloat(e.duration)||0); break;
+            case 'sleep': d.sleep = parseFloat(e.value)||0; break;
+            case 'hrv': d.hrv = parseFloat(e.value)||0; break;
+            case 'restingHR': d.rhr = parseFloat(e.value)||0; break;
+            case 'screenTime': d.screen = parseFloat(e.value)||0; break;
+            case 'water': d.water = (d.water||0)+(parseFloat(e.quantity)||0); break;
+            case 'coffee': d.coffee = (d.coffee||0)+(parseFloat(e.quantity)||0); break;
+            case 'alcohol': d.alcohol = (d.alcohol||0)+(parseFloat(e.quantity)||0); break;
+            case 'mood': d.mood = e.mood; break;
+            case 'energy': d.energy = e.energy; break;
+            case 'mindfulness': d.mindful = (d.mindful||0)+(parseFloat(e.value)||0); break;
+            case 'sauna': d.sauna = (d.sauna||0)+(parseFloat(e.duration)||0); break;
+            case 'coldPlunge': d.cold = (d.cold||0)+(parseFloat(e.duration)||0); break;
+          }
+        });
+        return d;
       }, [entries]);
 
-      const manualCats = { wellness: ['sauna', 'coldPlunge'], fitness: ['workout', 'steps', 'activeCalories', 'exerciseMinutes', 'distance'], vitals: ['sleep', 'heartRate', 'restingHR', 'hrv', 'weight'], nutrition: ['water', 'coffee', 'alcohol'], mental: ['mood', 'energy', 'mindfulness'], productivity: ['workHours', 'meetings'], lifestyle: ['masturbation', 'sexualActivity', 'vacation'] };
-      const allCats = { ...manualCats, environment: ['weather', 'sunshine', 'moonPhase', 'location'], sports: ['billsGame'], entertainment: ['tvWatched', 'movieWatched'] };
+      const getFiltered = (t, r = range) => {
+        const now = getZurichDate(); let start = new Date(now);
+        if (r === '7d') start.setDate(now.getDate()-7);
+        else if (r === '30d') start.setDate(now.getDate()-30);
+        else if (r === '90d') start.setDate(now.getDate()-90);
+        else start = new Date(0);
+        return entries.filter(e => e.type === t && new Date(e.ts) >= start).sort((a,b)=>new Date(a.ts)-new Date(b.ts));
+      };
 
-      const stressColor = s => s >= 70 ? 'text-red-500' : s >= 50 ? 'text-orange-500' : s >= 30 ? 'text-yellow-500' : 'text-green-500';
-      const stressLabel = s => s >= 70 ? 'High' : s >= 50 ? 'Moderate' : s >= 30 ? 'Low' : 'Calm';
+      const WellCard = ({score}) => {
+        const bg = score >= 70 ? 'from-green-400 to-emerald-500' : score >= 50 ? 'from-yellow-400 to-amber-500' : score >= 30 ? 'from-orange-400 to-red-400' : 'from-red-500 to-red-700';
+        const emoji = score >= 80 ? '🌟' : score >= 60 ? '😊' : score >= 40 ? '😐' : score >= 20 ? '😟' : '😫';
+        return (<div className={`bg-gradient-to-br ${bg} rounded-2xl p-4 text-white relative overflow-hidden`}><div className="absolute top-2 right-2 text-3xl opacity-30">{emoji}</div><div className="text-xs opacity-80">Wellness</div><div className="text-4xl font-bold">{score}</div><div className="text-xs opacity-70">{score>=70?'Great!':score>=50?'Good':score>=30?'Fair':'Low'}</div></div>);
+      };
 
-      const Chart = ({ type }) => {
+      const StressCard = ({score}) => {
+        const bg = score <= 30 ? 'from-green-400 to-teal-500' : score <= 50 ? 'from-blue-400 to-cyan-500' : score <= 70 ? 'from-yellow-400 to-orange-400' : 'from-red-400 to-red-600';
+        const emoji = score >= 80 ? '😰' : score >= 60 ? '😓' : score >= 40 ? '😌' : score >= 20 ? '😊' : '🧘';
+        return (<div className={`bg-gradient-to-br ${bg} rounded-2xl p-4 text-white relative overflow-hidden`}><div className="absolute top-2 right-2 text-3xl opacity-30">{emoji}</div><div className="text-xs opacity-80">Stress</div><div className="text-4xl font-bold">{score}</div><div className="text-xs opacity-70">{score<=30?'Calm':score<=50?'Low':score<=70?'Moderate':'High'}</div></div>);
+      };
+
+      const EnvCard = ({icon,value,sub,color,onClick}) => (<button onClick={onClick} className="bg-white dark:bg-gray-800 rounded-xl p-2.5 shadow flex flex-col items-center justify-center hover:shadow-md transition min-h-[70px]"><Icon name={icon} size={22} className={color} /><div className="font-bold text-sm mt-0.5 dark:text-white">{value}</div>{sub && <div className="text-xs text-gray-400 -mt-0.5">{sub}</div>}</button>);
+      const DataCard = ({label,value,unit,icon,color,onClick}) => (<button onClick={onClick} className="bg-white dark:bg-gray-800 rounded-xl p-3 shadow text-left hover:shadow-md transition w-full"><div className="flex items-center gap-2 mb-1"><div className={`${color} p-1.5 rounded-lg text-white`}><Icon name={icon} size={14}/></div><span className="text-xs text-gray-500 dark:text-gray-400">{label}</span></div><div className="font-bold text-lg dark:text-white">{value??'--'}<span className="text-xs text-gray-400 ml-1">{unit}</span></div></button>);
+
+      const Chart = ({data, h=120}) => {
+        if (!data?.length) return <div className="h-32 flex items-center justify-center text-gray-400">No data</div>;
+        const vals = data.map(d=>d.value), max = Math.max(...vals), min = Math.min(...vals), rng = max-min||1;
+        return (<svg viewBox="0 0 100 40" className="w-full" style={{height:h}}><defs><linearGradient id="cg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#3b82f6" stopOpacity=".3"/><stop offset="100%" stopColor="#3b82f6" stopOpacity="0"/></linearGradient></defs>{[0,.5,1].map((r,i)=><line key={i} x1="5" y1={5+r*30} x2="95" y2={5+r*30} stroke="#e5e7eb" strokeWidth=".3"/>)}<path d={`M 5 ${35-((data[0].value-min)/rng)*30} ${data.map((d,i)=>`L ${5+(i/(data.length-1||1))*90} ${35-((d.value-min)/rng)*30}`).join(' ')} L ${95} 35 L 5 35 Z`} fill="url(#cg)"/><path d={`M ${data.map((d,i)=>`${5+(i/(data.length-1||1))*90} ${35-((d.value-min)/rng)*30}`).join(' L ')}`} fill="none" stroke="#3b82f6" strokeWidth="1"/>{data.map((d,i)=><circle key={i} cx={5+(i/(data.length-1||1))*90} cy={35-((d.value-min)/rng)*30} r="1.5" fill="#3b82f6"/>)}</svg>);
+      };
+
+      const ScoreDetail = ({type, onBack}) => {
+        const isW = type === 'wellness';
+        const hist = getHist(scoreRange === 'today' ? '7d' : scoreRange);
+        const chartData = hist.scores.map(s=>({date:s.day,value:isW?s.well:s.stress}));
+        return (<div className="space-y-4"><div className="flex items-center gap-3"><button onClick={onBack} className="p-1 dark:text-white"><Icon name="ChevronLeft" size={24}/></button><h2 className="text-xl font-bold dark:text-white">{isW?'Wellness Score':'Stress Level'}</h2></div><div className="flex gap-2">{['today','7d','30d','90d','all'].map(r=>(<button key={r} onClick={()=>setScoreRange(r)} className={`px-3 py-1 rounded text-sm ${scoreRange===r?'bg-blue-600 text-white':'bg-gray-100 dark:bg-gray-700 dark:text-gray-200'}`}>{r}</button>))}</div>{scoreRange==='today'?(<div className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow"><h3 className="font-bold mb-3 dark:text-white">Today's Breakdown</h3><div className="space-y-2">{(isW?todayScores.wb:todayScores.sb).map((item,i)=>(<div key={i} className="flex justify-between items-center p-2 rounded bg-gray-50 dark:bg-gray-700"><span className="dark:text-gray-200">{item.n} {item.r && <span className="text-gray-400 text-xs">({item.r})</span>}</span><span className={`font-bold ${item.i>0?(isW?'text-green-600':'text-red-500'):(isW?'text-red-500':'text-green-600')}`}>{item.i>0?'+':''}{item.i}</span></div>))}{(isW?todayScores.wb:todayScores.sb).length===0&&<p className="text-gray-400 text-center py-4">No data yet</p>}</div></div>):(<><div className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow"><h3 className="font-bold mb-2 dark:text-white">Trend</h3><Chart data={chartData} h={150}/></div><div className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow"><h3 className="font-bold mb-3 dark:text-white">Avg Impacts</h3><div className="space-y-2">{hist.avgImp.slice(0,10).map((item,i)=>(<div key={i} className="flex justify-between items-center p-2 rounded bg-gray-50 dark:bg-gray-700"><span className="dark:text-gray-200">{item.n}</span><span className={`font-bold ${item.avg>0?(isW?'text-green-600':'text-red-500'):(isW?'text-red-500':'text-green-600')}`}>{item.avg>0?'+':''}{item.avg}</span></div>))}</div></div></>)}{!todayScores.personalized&&<div className="bg-blue-50 dark:bg-blue-900/30 p-3 rounded-xl text-sm text-blue-700 dark:text-blue-300"><Icon name="Info" size={16} className="inline mr-1"/>Learning: {getDayCount()}/{COLD_START_DAYS} days</div>}</div>);
+      };
+
+      const MetricDetail = ({type, onBack}) => {
         const info = types[type];
         const data = getFiltered(type);
-        if (!data.length) return <div className="h-48 flex items-center justify-center text-gray-400">No data</div>;
-        
-        const hasMulti = info.fields?.length > 1;
         const grouped = {};
-        data.forEach(e => {
-          const d = new Date(e.ts).toLocaleDateString('de-CH');
-          if (!grouped[d]) grouped[d] = hasMulti ? info.fields.map(() => []) : [];
-          if (hasMulti) info.fields.forEach((f, i) => grouped[d][i].push(parseFloat(e[f]) || 0));
-          else {
-            let v = e.type === 'mood' ? moodNum(e.mood) : e.type === 'energy' ? energyNum(e.energy) : parseFloat(e[info.field]) || (info.simple ? 1 : 0);
-            grouped[d].push(v);
-          }
-        });
-        
-        const chartData = Object.entries(grouped).map(([date, vals]) => {
-          if (hasMulti) return { date, values: vals.map(arr => arr.length ? arr.reduce((a,b) => a+b, 0) / arr.length : 0) };
-          const sum = ['steps', 'activeCalories', 'exerciseMinutes', 'water', 'coffee', 'alcohol', 'mindfulness', 'workHours', 'meetings', 'sauna', 'coldPlunge', 'workout', 'distance', 'masturbation', 'sexualActivity', 'tvWatched'].includes(type);
-          return { date, value: sum ? vals.reduce((a,b) => a+b, 0) : vals.reduce((a,b) => a+b, 0) / vals.length };
-        });
-        
-        const allVals = hasMulti ? chartData.flatMap(d => d.values) : chartData.map(d => d.value);
-        const max = Math.max(...allVals), min = Math.min(...allVals);
-        const rng = max - min || 1;
-        const colors = ['#3b82f6', '#f97316'];
-        
-        return (
-          <div>
-            {hasMulti && <div className="flex gap-4 mb-2 text-xs">{info.fields.map((f, i) => <span key={f} className="flex items-center gap-1"><span className="w-2 h-2 rounded" style={{background: colors[i]}}></span>{f}</span>)}</div>}
-            <svg viewBox="0 0 100 50" className="w-full h-48">
-              {[0, .5, 1].map((r, i) => <line key={i} x1="10" y1={5 + r * 40} x2="95" y2={5 + r * 40} stroke="#e5e7eb" strokeWidth=".2" />)}
-              {hasMulti ? info.fields.map((f, fi) => {
-                const pts = chartData.map((d, i) => ({ x: 10 + (i / (chartData.length - 1 || 1)) * 85, y: 45 - ((d.values[fi] - min) / rng) * 40 }));
-                return <g key={f}><path d={`M ${pts.map(p => `${p.x} ${p.y}`).join(' L ')}`} fill="none" stroke={colors[fi]} strokeWidth=".8" />{pts.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r=".8" fill={colors[fi]} />)}</g>;
-              }) : (
-                <g>
-                  <path d={`M ${chartData.map((d, i) => `${10 + (i / (chartData.length - 1 || 1)) * 85} ${45 - ((d.value - min) / rng) * 40}`).join(' L ')}`} fill="none" stroke="#3b82f6" strokeWidth=".8" />
-                  {chartData.map((d, i) => <circle key={i} cx={10 + (i / (chartData.length - 1 || 1)) * 85} cy={45 - ((d.value - min) / rng) * 40} r=".8" fill="#3b82f6" />)}
-                </g>
-              )}
-            </svg>
-          </div>
-        );
+        data.forEach(e => { const d = new Date(e.ts).toLocaleDateString('de-CH'); if (!grouped[d]) grouped[d] = []; let v = type==='mood'?moodNum(e.mood)*100:type==='energy'?energyNum(e.energy)*100:type==='weather'?e.temp:type==='moonPhase'?e.illum:type==='airQuality'?e.aqi:type==='pollenCount'?e.level*25:info.fields?parseFloat(e[info.fields[0]])||0:parseFloat(e[info.field])||parseFloat(e.value)||0; grouped[d].push(v); });
+        const chartData = Object.entries(grouped).map(([date,vals])=>{const sum=['steps','activeCalories','exerciseMinutes','water','coffee','alcohol','mindfulness','workout','sauna','coldPlunge','distance','screenTime'].includes(type); return {date,value:sum?vals.reduce((a,b)=>a+b,0):vals.reduce((a,b)=>a+b,0)/vals.length};});
+        return (<div className="space-y-4"><div className="flex items-center gap-3"><button onClick={onBack} className="p-1 dark:text-white"><Icon name="ChevronLeft" size={24}/></button><div className={`${info.color} p-2 rounded-lg text-white`}><Icon name={info.icon} size={20}/></div><h2 className="text-xl font-bold dark:text-white">{info.label}</h2></div><div className="flex gap-2">{['7d','30d','90d','all'].map(r=><button key={r} onClick={()=>setRange(r)} className={`px-3 py-1 rounded text-sm ${range===r?'bg-blue-600 text-white':'bg-gray-100 dark:bg-gray-700 dark:text-gray-200'}`}>{r}</button>)}</div><div className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow"><Chart data={chartData}/></div><div className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow"><h3 className="font-bold mb-3 dark:text-white">Recent</h3><div className="space-y-2 max-h-64 overflow-auto">{data.slice().reverse().slice(0,15).map(e=>(<div key={e.id} className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded text-sm"><div><span className="font-medium dark:text-white">{type==='mood'?moodEmoji(moodNum(e.mood)):type==='energy'?energyEmoji(energyNum(e.energy)):type==='weather'?`${e.temp}°C ${getWx(e.code).d}`:type==='moonPhase'?e.name:type==='airQuality'?`AQI ${e.aqi}`:type==='pollenCount'?`Lvl ${e.level}`:info.fields?info.fields.map(f=>e[f]).join('/'):e[info.field]||e.value}{info.unit||''}</span><span className="text-gray-400 text-xs ml-2">{formatDate(e.ts)}</span></div>{!e.auto&&<button onClick={()=>delEntry(e.id)} className="text-red-400"><Icon name="X" size={14}/></button>}</div>))}</div></div></div>);
       };
 
-      const Modal = ({ type, onClose }) => {
+      const Modal = ({type, onClose}) => {
         const info = types[type];
-        const [form, setForm] = useState({ date: new Date().toISOString().slice(0, 16), duration: '', temperature: '', value: '', quantity: '', mood: 'neutral', energy: 'medium', count: '', notes: '' });
-        const save = () => {
-          const entry = { type, ...form };
-          if (info.simple) entry.value = 1;
-          addEntry(entry);
-          onClose();
-        };
-        return (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-            <div className="bg-white rounded-xl w-full max-w-sm p-5">
-              <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg">{info.label}</h3><button onClick={onClose}><Icon name="X" size={20} /></button></div>
-              <div className="space-y-3">
-                <input type="datetime-local" value={form.date} onChange={e => setForm({...form, date: e.target.value})} className="w-full border rounded p-2 text-sm" />
-                {info.fields?.includes('duration') && <input type="number" placeholder="Duration (min)" value={form.duration} onChange={e => setForm({...form, duration: e.target.value})} className="w-full border rounded p-2 text-sm" />}
-                {info.fields?.includes('temperature') && <input type="number" placeholder="Temperature (°C)" value={form.temperature} onChange={e => setForm({...form, temperature: e.target.value})} className="w-full border rounded p-2 text-sm" />}
-                {type === 'mood' && <select value={form.mood} onChange={e => setForm({...form, mood: e.target.value})} className="w-full border rounded p-2 text-sm"><option value="great">😄 Great</option><option value="good">🙂 Good</option><option value="neutral">😐 Neutral</option><option value="low">😕 Low</option><option value="bad">😢 Bad</option></select>}
-                {type === 'energy' && <select value={form.energy} onChange={e => setForm({...form, energy: e.target.value})} className="w-full border rounded p-2 text-sm"><option value="very-high">⚡ Very High</option><option value="high">🔋 High</option><option value="medium">➡️ Medium</option><option value="low">🔻 Low</option><option value="very-low">💤 Very Low</option></select>}
-                {info.field === 'value' && !info.simple && <input type="number" placeholder={info.unit || 'Value'} value={form.value} onChange={e => setForm({...form, value: e.target.value})} className="w-full border rounded p-2 text-sm" />}
-                {info.field === 'quantity' && <input type="number" placeholder={info.unit} value={form.quantity} onChange={e => setForm({...form, quantity: e.target.value})} className="w-full border rounded p-2 text-sm" />}
-                {info.field === 'duration' && !info.fields && <input type="number" placeholder="Hours" value={form.duration} onChange={e => setForm({...form, duration: e.target.value})} className="w-full border rounded p-2 text-sm" />}
-                {info.field === 'count' && <input type="number" placeholder="Count" value={form.count} onChange={e => setForm({...form, count: e.target.value})} className="w-full border rounded p-2 text-sm" />}
-                {info.simple && <p className="text-center text-gray-500 text-sm py-2">Tap Save to log</p>}
-                <button onClick={save} className="w-full bg-blue-600 text-white rounded p-2 font-medium">Save</button>
-              </div>
-            </div>
-          </div>
-        );
-      };
-
-      const Detail = ({ type, onBack }) => {
-        const info = types[type];
-        const data = getFiltered(type);
-        return (
-          <div className="space-y-4">
-            <div className="flex items-center gap-3">
-              <button onClick={onBack} className="p-1"><Icon name="ChevronLeft" size={24} /></button>
-              <div className={`${info.color} p-2 rounded-lg text-white`}><Icon name={info.icon} size={20} /></div>
-              <h2 className="text-xl font-bold">{info.label}</h2>
-            </div>
-            <div className="flex gap-2">{['7d', '30d', '90d', 'all'].map(r => <button key={r} onClick={() => setRange(r)} className={`px-3 py-1 rounded text-sm ${range === r ? 'bg-blue-600 text-white' : 'bg-gray-100'}`}>{r}</button>)}</div>
-            <div className="bg-white p-4 rounded-xl shadow"><Chart type={type} /></div>
-            <div className="bg-white p-4 rounded-xl shadow">
-              <h3 className="font-bold mb-3">Recent ({data.length})</h3>
-              <div className="space-y-2 max-h-64 overflow-auto">
-                {data.slice().reverse().slice(0, 20).map(e => (
-                  <div key={e.id} className="flex justify-between items-center p-2 bg-gray-50 rounded text-sm">
-                    <div>
-                      <div className="font-medium">{type === 'mood' ? numMood(moodNum(e.mood)) : type === 'energy' ? numEnergy(energyNum(e.energy)) : type === 'weather' ? `${e.temperature}°C ${getWeather(e.code).desc}` : type === 'moonPhase' ? `${e.phase} ${e.illumination}%` : type === 'billsGame' ? `${e.won ? 'Won' : 'Lost'} ${e.score}` : info.simple ? '✓' : info.fields ? info.fields.map(f => e[f]).join('/') : `${e[info.field]} ${info.unit}`}</div>
-                      <div className="text-xs text-gray-500">{formatDate(e.ts)}</div>
-                    </div>
-                    {!e.auto && <button onClick={() => delEntry(e.id)} className="text-red-400"><Icon name="X" size={16} /></button>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        );
+        const [form, setForm] = useState({date:new Date().toISOString().slice(0,16),duration:'',temperature:'',value:'',quantity:'',mood:'neutral',energy:'medium'});
+        const save = () => { addEntry({type,...form}); onClose(); };
+        return (<div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50"><div className="bg-white dark:bg-gray-800 rounded-xl w-full max-w-sm p-5"><div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg dark:text-white">{info.label}</h3><button onClick={onClose} className="dark:text-white"><Icon name="X" size={20}/></button></div><div className="space-y-3"><input type="datetime-local" value={form.date} onChange={e=>setForm({...form,date:e.target.value})} className="w-full border dark:border-gray-600 rounded p-2 text-sm dark:bg-gray-700 dark:text-white"/>{info.fields?.includes('duration')&&<input type="number" placeholder="Duration (min)" value={form.duration} onChange={e=>setForm({...form,duration:e.target.value})} className="w-full border dark:border-gray-600 rounded p-2 text-sm dark:bg-gray-700 dark:text-white"/>}{info.fields?.includes('temperature')&&<input type="number" placeholder="Temp (°C)" value={form.temperature} onChange={e=>setForm({...form,temperature:e.target.value})} className="w-full border dark:border-gray-600 rounded p-2 text-sm dark:bg-gray-700 dark:text-white"/>}{type==='mood'&&<select value={form.mood} onChange={e=>setForm({...form,mood:e.target.value})} className="w-full border dark:border-gray-600 rounded p-2 text-sm dark:bg-gray-700 dark:text-white"><option value="great">😄 Great</option><option value="good">🙂 Good</option><option value="neutral">😐 Neutral</option><option value="low">😕 Low</option><option value="bad">😢 Bad</option></select>}{type==='energy'&&<select value={form.energy} onChange={e=>setForm({...form,energy:e.target.value})} className="w-full border dark:border-gray-600 rounded p-2 text-sm dark:bg-gray-700 dark:text-white"><option value="very-high">⚡ Very High</option><option value="high">🔋 High</option><option value="medium">➡️ Medium</option><option value="low">🔻 Low</option><option value="very-low">💤 Very Low</option></select>}{info.field==='value'&&!info.toggle&&<input type="number" placeholder={info.unit||'Value'} value={form.value} onChange={e=>setForm({...form,value:e.target.value})} className="w-full border dark:border-gray-600 rounded p-2 text-sm dark:bg-gray-700 dark:text-white"/>}{info.field==='quantity'&&<input type="number" placeholder={info.unit} value={form.quantity} onChange={e=>setForm({...form,quantity:e.target.value})} className="w-full border dark:border-gray-600 rounded p-2 text-sm dark:bg-gray-700 dark:text-white"/>}{info.field==='duration'&&!info.fields&&<input type="number" placeholder="Minutes" value={form.duration} onChange={e=>setForm({...form,duration:e.target.value})} className="w-full border dark:border-gray-600 rounded p-2 text-sm dark:bg-gray-700 dark:text-white"/>}<button onClick={save} className="w-full bg-blue-600 text-white rounded p-2 font-medium">Save</button></div></div></div>);
       };
 
       if (loading) return <div className="min-h-screen flex items-center justify-center"><div className="animate-spin h-8 w-8 border-2 border-blue-600 border-t-transparent rounded-full"></div></div>;
 
-      return (
-        <div className="min-h-screen bg-gray-50">
-          <div className="bg-white border-b sticky top-0 z-40 px-4 py-2">
-            <div className="max-w-2xl mx-auto flex justify-between items-center">
-              <div><h1 className="font-bold text-lg">Health Tracker</h1><p className="text-xs text-gray-500">{locationName} • {getZurichDate().toLocaleDateString('de-CH')}</p></div>
-              <button onClick={() => setSettings(true)}><Icon name="Settings" size={20} /></button>
-            </div>
-          </div>
-          
-          <div className="bg-white border-b sticky top-12 z-30">
-            <div className="max-w-2xl mx-auto flex">
-              {['dashboard', 'trends', 'insights'].map(t => <button key={t} onClick={() => { setTab(t); setMetric(null); }} className={`flex-1 py-2 text-sm font-medium border-b-2 ${tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500'}`}>{t.charAt(0).toUpperCase() + t.slice(1)}</button>)}
-            </div>
-          </div>
-
-          <div className="max-w-2xl mx-auto p-4">
-            {tab === 'dashboard' && (
-              <div className="space-y-4">
-                {/* Weather + Moon */}
-                <div className="bg-gradient-to-r from-sky-500 to-blue-600 rounded-xl p-4 text-white">
-                  <div className="flex justify-between items-center">
-                    <div className="flex items-center gap-3">
-                      {weather?.current && <Icon name={getWeather(weather.current.weather_code).icon} size={36} />}
-                      <div>
-                        <div className="text-3xl font-bold">{weather?.current ? Math.round(weather.current.temperature_2m) : '--'}°C</div>
-                        <div className="text-sm opacity-90">{weather?.current ? getWeather(weather.current.weather_code).desc : 'Loading...'}</div>
-                      </div>
-                      <div className="text-xs opacity-75 ml-4">
-                        {weather?.daily && <div>☀️ {Math.round((weather.daily.sunshine_duration?.[0] || 0) / 3600)}h</div>}
-                        {weather?.current && <div>💨 {Math.round(weather.current.wind_speed_10m)}km/h</div>}
-                      </div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-3xl">{moon.icon}</div>
-                      <div className="text-xs opacity-80">{moon.name}</div>
-                      <div className="text-xs opacity-60">{moon.illumination}%</div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Wellness + Stress */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="bg-gradient-to-br from-purple-500 to-indigo-600 rounded-xl p-4 text-white">
-                    <div className="text-xs opacity-80 mb-1">Wellness</div>
-                    <div className="text-3xl font-bold">{wellness.score}</div>
-                    <div className="text-xs mt-2 space-y-0.5 max-h-16 overflow-auto">
-                      {wellness.breakdown.slice(0, 4).map((b, i) => <div key={i} className="flex justify-between"><span>{b.f}</span><span className={b.p ? 'text-green-300' : 'text-red-300'}>{b.i > 0 ? '+' : ''}{b.i}</span></div>)}
-                    </div>
-                  </div>
-                  <div className="bg-white rounded-xl p-4 shadow">
-                    <div className="text-xs text-gray-500 mb-1">Stress Level</div>
-                    <div className={`text-3xl font-bold ${stressColor(stress.score)}`}>{stress.score}</div>
-                    <div className={`text-sm ${stressColor(stress.score)}`}>{stressLabel(stress.score)}</div>
-                    <div className="text-xs text-gray-400 mt-1 space-y-0.5">
-                      {stress.factors.slice(0, 2).map((f, i) => <div key={i}>• {f}</div>)}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Quick Stats */}
-                <div className="grid grid-cols-4 gap-2">
-                  {[{ i: 'Footprints', v: todayStats.steps.toLocaleString(), l: 'Steps', c: 'text-teal-600' }, { i: 'Flame', v: todayStats.cal, l: 'Cal', c: 'text-orange-600' }, { i: 'Zap', v: todayStats.exercise, l: 'Min', c: 'text-lime-600' }, { i: 'Droplet', v: `${todayStats.water}`, l: 'ml', c: 'text-cyan-600' }].map((s, i) => (
-                    <div key={i} className="bg-white p-2 rounded-lg shadow text-center">
-                      <Icon name={s.i} size={16} className={s.c} />
-                      <div className="font-bold text-sm">{s.v}</div>
-                      <div className="text-xs text-gray-400">{s.l}</div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Manual Categories */}
-                {Object.entries(manualCats).map(([cat, items]) => (
-                  <div key={cat} className="bg-white p-3 rounded-xl shadow">
-                    <h3 className="text-xs font-bold text-gray-500 uppercase mb-2">{cat}</h3>
-                    <div className="grid grid-cols-5 gap-2">
-                      {items.map(k => { const t = types[k]; return (
-                        <button key={k} onClick={() => setModal(k)} className="flex flex-col items-center p-2 rounded-lg hover:bg-gray-50">
-                          <div className={`${t.color} p-1.5 rounded-full text-white`}><Icon name={t.icon} size={14} /></div>
-                          <span className="text-xs mt-1 text-center leading-tight">{t.label}</span>
-                        </button>
-                      ); })}
-                    </div>
-                  </div>
-                ))}
-
-                {/* Recent */}
-                <div className="bg-white p-3 rounded-xl shadow">
-                  <h3 className="text-xs font-bold text-gray-500 uppercase mb-2">Recent</h3>
-                  <div className="space-y-1">
-                    {entries.slice(0, 6).map(e => { const t = types[e.type]; if (!t) return null; return (
-                      <div key={e.id} className="flex items-center gap-2 p-2 bg-gray-50 rounded text-sm">
-                        <div className={`${t.color} p-1 rounded text-white`}><Icon name={t.icon} size={12} /></div>
-                        <span className="flex-1 truncate">{t.label}</span>
-                        <span className="text-xs text-gray-400">{new Date(e.ts).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })}</span>
-                      </div>
-                    ); })}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {tab === 'trends' && (metric ? <Detail type={metric} onBack={() => setMetric(null)} /> : (
-              <div className="space-y-4">
-                {Object.entries(allCats).map(([cat, items]) => (
-                  <div key={cat} className="bg-white p-3 rounded-xl shadow">
-                    <h3 className="text-xs font-bold text-gray-500 uppercase mb-2">{cat}</h3>
-                    <div className="grid grid-cols-2 gap-2">
-                      {items.map(k => { const t = types[k]; const n = entries.filter(e => e.type === k).length; return (
-                        <button key={k} onClick={() => setMetric(k)} className={`flex items-center gap-2 p-2 rounded-lg text-left ${n ? 'hover:bg-gray-50' : 'opacity-40'}`}>
-                          <div className={`${t.color} p-2 rounded text-white`}><Icon name={t.icon} size={14} /></div>
-                          <div><div className="font-medium text-sm">{t.label}</div><div className="text-xs text-gray-400">{n} entries</div></div>
-                        </button>
-                      ); })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ))}
-
-            {tab === 'insights' && (
-              <div className="space-y-4">
-                {/* Custom Correlation */}
-                <div className="bg-white p-4 rounded-xl shadow">
-                  <h3 className="font-bold mb-3 flex items-center gap-2"><Icon name="Search" size={16} />Find Correlation</h3>
-                  <div className="grid grid-cols-3 gap-2">
-                    <select value={corr1} onChange={e => setCorr1(e.target.value)} className="border rounded p-2 text-sm">
-                      <option value="">Metric 1</option>
-                      {allMetrics.map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                    <select value={corr2} onChange={e => setCorr2(e.target.value)} className="border rounded p-2 text-sm">
-                      <option value="">Metric 2</option>
-                      {allMetrics.map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                    <button onClick={findCustomCorr} className="bg-blue-600 text-white rounded text-sm">Analyze</button>
-                  </div>
-                  {customCorr && (
-                    <div className={`mt-3 p-3 rounded ${customCorr.error ? 'bg-red-50 text-red-600' : customCorr.corr > 0 ? 'bg-green-50' : 'bg-red-50'}`}>
-                      {customCorr.error ? <p className="text-sm">{customCorr.error}</p> : (
-                        <div><p className="font-medium text-sm">{customCorr.m1} ↔ {customCorr.m2}</p><p className={`text-xl font-bold ${customCorr.corr > 0 ? 'text-green-600' : 'text-red-600'}`}>{customCorr.corr > 0 ? '+' : ''}{(customCorr.corr * 100).toFixed(0)}%</p><p className="text-xs text-gray-500">{customCorr.n} days</p></div>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* Auto Correlations */}
-                <div className="bg-white p-4 rounded-xl shadow">
-                  <h3 className="font-bold mb-3 flex items-center gap-2"><Icon name="Lightbulb" size={16} className="text-yellow-500" />Discovered</h3>
-                  {correlations.length === 0 ? <p className="text-gray-400 text-center py-8 text-sm">Track 5+ days to see correlations</p> : (
-                    <div className="space-y-2">
-                      {correlations.slice(0, 15).map((c, i) => (
-                        <div key={i} className={`p-2 rounded text-sm ${c.strength === 'strong' ? 'bg-yellow-50' : c.strength === 'moderate' ? 'bg-blue-50' : 'bg-gray-50'}`}>
-                          <div className="flex justify-between">
-                            <span>{c.cause} → {c.effect}</span>
-                            <span className={c.dir === 'positive' ? 'text-green-600' : 'text-red-600'}>{c.corr > 0 ? '+' : ''}{(c.corr * 100).toFixed(0)}%</span>
-                          </div>
-                          <div className="text-xs text-gray-400">{c.n} days • {c.strength}</div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {modal && <Modal type={modal} onClose={() => setModal(null)} />}
-          {settings && (
-            <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-              <div className="bg-white rounded-xl w-full max-w-sm p-5">
-                <div className="flex justify-between mb-4"><h3 className="font-bold">Settings</h3><button onClick={() => setSettings(false)}><Icon name="X" size={20} /></button></div>
-                <div className="space-y-3">
-                  <div><label className="text-sm font-medium">Trakt.tv Client ID</label><input type="text" value={trakt.clientId} onChange={e => setTrakt({...trakt, clientId: e.target.value})} className="w-full border rounded p-2 text-sm mt-1" /></div>
-                  <div><label className="text-sm font-medium">Trakt.tv Token</label><input type="password" value={trakt.token} onChange={e => setTrakt({...trakt, token: e.target.value})} className="w-full border rounded p-2 text-sm mt-1" /></div>
-                  <button onClick={() => { localStorage.setItem('ht-trakt', JSON.stringify(trakt)); setSettings(false); }} className="w-full bg-blue-600 text-white rounded p-2">Save</button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      );
+      return (<div className="min-h-screen bg-gray-100 dark:bg-gray-900 transition-colors"><div className="bg-white dark:bg-gray-800 border-b dark:border-gray-700 sticky top-0 z-40 px-4 py-2"><div className="max-w-lg mx-auto flex justify-between items-center"><div><h1 className="font-bold text-lg dark:text-white">Health Tracker</h1><p className="text-xs text-gray-500 dark:text-gray-400">{locName} • {getZurichDate().toLocaleDateString('de-CH')}</p></div><div className="flex items-center gap-2"><button onClick={()=>setDark(!dark)} className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"><Icon name={dark?'Sun':'Moon'} size={20} className="dark:text-white"/></button><button onClick={()=>setSettings(true)} className="dark:text-white"><Icon name="Settings" size={20}/></button></div></div></div><div className="bg-white dark:bg-gray-800 border-b dark:border-gray-700 sticky top-12 z-30"><div className="max-w-lg mx-auto flex">{['dashboard','track','insights'].map(t=><button key={t} onClick={()=>{setTab(t);setDetail(null);setScoreView(null);}} className={`flex-1 py-2 text-sm font-medium border-b-2 ${tab===t?'border-blue-600 text-blue-600':'border-transparent text-gray-500 dark:text-gray-400'}`}>{t.charAt(0).toUpperCase()+t.slice(1)}</button>)}</div></div><div className="max-w-lg mx-auto p-4">{tab==='dashboard'&&!detail&&!scoreView&&(<div className="space-y-4"><div className="grid grid-cols-6 gap-2"><EnvCard icon={weather?.current?getWx(weather.current.weather_code).i:'Cloud'} value={weather?.current?`${Math.round(weather.current.temperature_2m)}°`:'--'} color={weather?.current?'text-yellow-500':'text-gray-400'} onClick={()=>setDetail('weather')}/><EnvCard icon="Wind" value={weather?.current?Math.round(weather.current.wind_speed_10m):'--'} sub="km/h" color="text-sky-500" onClick={()=>setDetail('wind')}/><EnvCard icon="Sun" value={weather?.daily?Math.round((weather.daily.sunshine_duration?.[0]||0)/3600):'--'} sub="hrs" color="text-amber-500" onClick={()=>setDetail('sunshine')}/><EnvCard icon="Wind" value={aqi?.european_aqi||'--'} sub="AQI" color={aqiColor(aqi?.european_aqi||50)} onClick={()=>setDetail('airQuality')}/><EnvCard icon="Flower2" value={pollen?.level??'--'} sub="/4" color={pollenColor(pollen?.level||0)} onClick={()=>setDetail('pollenCount')}/><button onClick={()=>setDetail('moonPhase')} className="bg-white dark:bg-gray-800 rounded-xl p-2.5 shadow flex flex-col items-center justify-center hover:shadow-md transition min-h-[70px]"><span className="text-2xl">{moon.icon}</span><div className="text-xs text-gray-400">{moon.illum}%</div></button></div><div className="grid grid-cols-2 gap-3"><button onClick={()=>setScoreView('wellness')} className="text-left"><WellCard score={todayScores.well}/></button><button onClick={()=>setScoreView('stress')} className="text-left"><StressCard score={todayScores.stress}/></button></div><div className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow"><h3 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-2">Fitness</h3><div className="grid grid-cols-3 gap-2"><DataCard label="Steps" value={todayData.steps?.toLocaleString()} icon="Footprints" color="bg-teal-500" onClick={()=>setDetail('steps')}/><DataCard label="Calories" value={todayData.cal} unit="kcal" icon="Flame" color="bg-orange-500" onClick={()=>setDetail('activeCalories')}/><DataCard label="Exercise" value={todayData.exercise} unit="min" icon="Zap" color="bg-lime-500" onClick={()=>setDetail('exerciseMinutes')}/></div></div><div className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow"><h3 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-2">Vitals</h3><div className="grid grid-cols-3 gap-2"><DataCard label="Sleep" value={todayData.sleep} unit="hrs" icon="Moon" color="bg-indigo-500" onClick={()=>setDetail('sleep')}/><DataCard label="HRV" value={todayData.hrv} unit="ms" icon="Activity" color="bg-purple-600" onClick={()=>setDetail('hrv')}/><DataCard label="RHR" value={todayData.rhr} unit="bpm" icon="Heart" color="bg-pink-500" onClick={()=>setDetail('restingHR')}/></div></div><div className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow"><h3 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-2">Nutrition</h3><div className="grid grid-cols-3 gap-2"><DataCard label="Water" value={todayData.water} unit="ml" icon="Droplet" color="bg-blue-500" onClick={()=>setDetail('water')}/><DataCard label="Coffee" value={todayData.coffee} unit="cups" icon="Coffee" color="bg-amber-700" onClick={()=>setDetail('coffee')}/><DataCard label="Alcohol" value={todayData.alcohol} unit="" icon="Wine" color="bg-purple-500" onClick={()=>setDetail('alcohol')}/></div></div><div className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow"><h3 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-2">Mental</h3><div className="grid grid-cols-3 gap-2"><DataCard label="Mood" value={todayData.mood?moodEmoji(moodNum(todayData.mood)):null} icon="Smile" color="bg-yellow-500" onClick={()=>setDetail('mood')}/><DataCard label="Energy" value={todayData.energy?energyEmoji(energyNum(todayData.energy)):null} icon="Battery" color="bg-amber-500" onClick={()=>setDetail('energy')}/><DataCard label="Mindful" value={todayData.mindful} unit="min" icon="Brain" color="bg-violet-500" onClick={()=>setDetail('mindfulness')}/></div></div><div className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow"><h3 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-2">Wellness</h3><div className="grid grid-cols-3 gap-2"><DataCard label="Sauna" value={todayData.sauna} unit="min" icon="Flame" color="bg-orange-500" onClick={()=>setDetail('sauna')}/><DataCard label="Cold" value={todayData.cold} unit="min" icon="Snowflake" color="bg-cyan-500" onClick={()=>setDetail('coldPlunge')}/><DataCard label="Workout" value={todayData.workout} unit="min" icon="Dumbbell" color="bg-green-500" onClick={()=>setDetail('workout')}/></div></div></div>)}{tab==='dashboard'&&detail&&<MetricDetail type={detail} onBack={()=>setDetail(null)}/>}{tab==='dashboard'&&scoreView&&<ScoreDetail type={scoreView} onBack={()=>setScoreView(null)}/>}{tab==='track'&&!modal&&(<div className="space-y-4"><div className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow"><h3 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-3">Today's Status</h3><div className="grid grid-cols-2 gap-x-4"><Toggle label="Work" checked={toggles.work} onChange={v=>handleToggle('work',v)}/><Toggle label="Vacation" checked={toggles.vacation} onChange={v=>handleToggle('vacation',v)}/><Toggle label="Travel" checked={toggles.workTravel} onChange={v=>handleToggle('workTravel',v)}/><Toggle label="Sick" checked={toggles.sickness} onChange={v=>handleToggle('sickness',v)}/><Toggle label="Masturbation" checked={toggles.masturbation} onChange={v=>handleToggle('masturbation',v)}/><Toggle label="Sex" checked={toggles.sexualActivity} onChange={v=>handleToggle('sexualActivity',v)}/></div></div>{[{c:'Wellness',i:['sauna','coldPlunge']},{c:'Fitness',i:['workout','steps','activeCalories','exerciseMinutes','distance']},{c:'Vitals',i:['sleep','heartRate','restingHR','hrv','weight','screenTime']},{c:'Nutrition',i:['water','coffee','alcohol']},{c:'Mental',i:['mood','energy','mindfulness']}].map(({c,i})=>(<div key={c} className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow"><h3 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-2">{c}</h3><div className="grid grid-cols-4 gap-2">{i.map(k=>{const t=types[k];return(<button key={k} onClick={()=>setModal(k)} className="flex flex-col items-center p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700"><div className={`${t.color} p-2 rounded-full text-white`}><Icon name={t.icon} size={16}/></div><span className="text-xs mt-1 dark:text-gray-200">{t.label}</span></button>);})}</div></div>))}</div>)}{tab==='insights'&&(<div className="space-y-4"><div className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow"><h3 className="font-bold mb-3 dark:text-white">Find Correlation</h3><div className="grid grid-cols-3 gap-2"><select value={corr1} onChange={e=>setCorr1(e.target.value)} className="border dark:border-gray-600 rounded p-2 text-sm dark:bg-gray-700 dark:text-white"><option value="">Metric 1</option>{['mood','energy','sleep','hrv','steps','workout','alcohol','coffee','wx','pollen','aqi','moon','screen'].map(m=><option key={m} value={m}>{m}</option>)}</select><select value={corr2} onChange={e=>setCorr2(e.target.value)} className="border dark:border-gray-600 rounded p-2 text-sm dark:bg-gray-700 dark:text-white"><option value="">Metric 2</option>{['mood','energy','sleep','hrv','steps','workout','alcohol','coffee','wx','pollen','aqi','moon','screen'].map(m=><option key={m} value={m}>{m}</option>)}</select><button onClick={()=>{const daily=getDailyData(),xs=[],ys=[];Object.values(daily).forEach(d=>{if(d.norm[corr1]!==undefined&&d.norm[corr2]!==undefined){xs.push(d.norm[corr1]);ys.push(d.norm[corr2]);}});if(xs.length>=5){const n=xs.length,sx=xs.reduce((a,b)=>a+b,0),sy=ys.reduce((a,b)=>a+b,0),sxy=xs.reduce((a,xi,i)=>a+xi*ys[i],0),sx2=xs.reduce((a,xi)=>a+xi*xi,0),sy2=ys.reduce((a,yi)=>a+yi*yi,0);const c=(n*sxy-sx*sy)/Math.sqrt((n*sx2-sx*sx)*(n*sy2-sy*sy));setCustomCorr({corr:c,n,m1:corr1,m2:corr2});}else setCustomCorr({error:'Need 5+ days'});}} className="bg-blue-600 text-white rounded text-sm">Analyze</button></div>{customCorr&&(<div className={`mt-3 p-3 rounded ${customCorr.error?'bg-red-50 dark:bg-red-900/30':customCorr.corr>0?'bg-green-50 dark:bg-green-900/30':'bg-red-50 dark:bg-red-900/30'}`}>{customCorr.error?<p className="text-red-600 dark:text-red-400 text-sm">{customCorr.error}</p>:(<div><p className="font-medium dark:text-white">{customCorr.m1} ↔ {customCorr.m2}</p><p className={`text-xl font-bold ${customCorr.corr>0?'text-green-600':'text-red-600'}`}>{(customCorr.corr*100).toFixed(0)}%</p><p className="text-xs text-gray-500 dark:text-gray-400">{customCorr.n} days</p></div>)}</div>)}</div><div className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow"><h3 className="font-bold mb-2 dark:text-white">System</h3><div className={`p-3 rounded-lg ${todayScores.personalized?'bg-green-50 dark:bg-green-900/30':'bg-blue-50 dark:bg-blue-900/30'}`}>{todayScores.personalized?<p className="text-green-700 dark:text-green-400 text-sm"><Icon name="Check" size={16} className="inline mr-1"/>Personalized ({getDayCount()} days)</p>:<p className="text-blue-700 dark:text-blue-400 text-sm"><Icon name="Info" size={16} className="inline mr-1"/>Learning: {getDayCount()}/{COLD_START_DAYS} days</p>}</div></div></div>)}</div>{modal&&<Modal type={modal} onClose={()=>setModal(null)}/>}{settings&&(<div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50"><div className="bg-white dark:bg-gray-800 rounded-xl w-full max-w-sm p-5"><div className="flex justify-between mb-4"><h3 className="font-bold dark:text-white">Settings</h3><button onClick={()=>setSettings(false)} className="dark:text-white"><Icon name="X" size={20}/></button></div><div className="space-y-3"><div><label className="text-sm font-medium dark:text-gray-200">Trakt Client ID</label><input type="text" value={trakt.clientId} onChange={e=>setTrakt({...trakt,clientId:e.target.value})} className="w-full border dark:border-gray-600 rounded p-2 text-sm mt-1 dark:bg-gray-700 dark:text-white"/></div><div><label className="text-sm font-medium dark:text-gray-200">Trakt Token</label><input type="password" value={trakt.token} onChange={e=>setTrakt({...trakt,token:e.target.value})} className="w-full border dark:border-gray-600 rounded p-2 text-sm mt-1 dark:bg-gray-700 dark:text-white"/></div><button onClick={()=>{localStorage.setItem('ht-trakt',JSON.stringify(trakt));setSettings(false);}} className="w-full bg-blue-600 text-white rounded p-2">Save</button></div></div></div>)}</div>);
     };
 
     ReactDOM.render(<App />, document.getElementById('root'));
