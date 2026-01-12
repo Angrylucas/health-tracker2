@@ -9,10 +9,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
-  <link rel="manifest" href="data:application/json,{&quot;name&quot;:&quot;Health Tracker&quot;,&quot;short_name&quot;:&quot;Health&quot;,&quot;start_url&quot;:&quot;.&quot;,&quot;display&quot;:&quot;standalone&quot;,&quot;background_color&quot;:&quot;%23f9fafb&quot;,&quot;theme_color&quot;:&quot;%233b82f6&quot;}">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="Health Tracker">
   <style>
     * { -webkit-tap-highlight-color: transparent; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
@@ -20,15 +16,74 @@
 </head>
 <body>
   <div id="root"></div>
-  
   <script type="text/babel">
-    const { useState, useEffect } = React;
+    const { useState, useEffect, useMemo, useCallback } = React;
+    
+    const TIMEZONE = 'Europe/Zurich';
+    const WORK_LAT = 47.44517433218009, WORK_LON = 8.612249846939735;
+    const HOME_LAT = 47.44684441370621, HOME_LON = 8.649969104383272;
+    const LOCATION_RADIUS = 250;
 
-    // Icon components using Lucide
+    const getZurichDate = () => new Date(new Date().toLocaleString('en-US', { timeZone: TIMEZONE }));
+    const formatDate = (d) => new Date(d).toLocaleString('de-CH', { timeZone: TIMEZONE });
+    
+    const haversineDistance = (lat1, lon1, lat2, lon2) => {
+      const R = 6371000;
+      const toRad = x => x * Math.PI / 180;
+      const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    };
+    
+    const getLocationName = (lat, lon) => {
+      if (haversineDistance(lat, lon, WORK_LAT, WORK_LON) <= LOCATION_RADIUS) return 'Work';
+      if (haversineDistance(lat, lon, HOME_LAT, HOME_LON) <= LOCATION_RADIUS) return 'Home';
+      return 'On the Road';
+    };
+    
+    const getMoonPhase = (date = new Date()) => {
+      const year = date.getFullYear(), month = date.getMonth() + 1, day = date.getDate();
+      let y = year, m = month;
+      if (m < 3) { y--; m += 12; }
+      const c = Math.floor(y / 100);
+      const jd = Math.floor(365.25 * (y + 4716)) + Math.floor(30.6001 * (m + 1)) + day + (2 - c + Math.floor(c/4)) - 1524.5;
+      const age = ((jd - 2451550.1) / 29.530588853 % 1) * 29.53;
+      const phases = [
+        { max: 1.85, name: 'New Moon', icon: '🌑' },
+        { max: 5.54, name: 'Waxing Crescent', icon: '🌒' },
+        { max: 9.23, name: 'First Quarter', icon: '🌓' },
+        { max: 12.92, name: 'Waxing Gibbous', icon: '🌔' },
+        { max: 16.61, name: 'Full Moon', icon: '🌕' },
+        { max: 20.30, name: 'Waning Gibbous', icon: '🌖' },
+        { max: 23.99, name: 'Last Quarter', icon: '🌗' },
+        { max: 27.68, name: 'Waning Crescent', icon: '🌘' },
+        { max: 30, name: 'New Moon', icon: '🌑' }
+      ];
+      const phase = phases.find(p => age < p.max) || phases[0];
+      return { ...phase, illumination: Math.round((1 - Math.abs(age - 14.765) / 14.765) * 100), age: Math.round(age * 10) / 10 };
+    };
+
+    const weatherCodes = {
+      0: { desc: 'Clear', icon: 'Sun', score: 5 }, 1: { desc: 'Mostly Clear', icon: 'Sun', score: 5 },
+      2: { desc: 'Partly Cloudy', icon: 'CloudSun', score: 4 }, 3: { desc: 'Overcast', icon: 'Cloud', score: 3 },
+      45: { desc: 'Foggy', icon: 'CloudFog', score: 2 }, 48: { desc: 'Icy Fog', icon: 'CloudFog', score: 1 },
+      51: { desc: 'Light Drizzle', icon: 'CloudDrizzle', score: 3 }, 53: { desc: 'Drizzle', icon: 'CloudDrizzle', score: 2 },
+      55: { desc: 'Heavy Drizzle', icon: 'CloudDrizzle', score: 2 }, 56: { desc: 'Freezing Drizzle', icon: 'Snowflake', score: 1 },
+      61: { desc: 'Light Rain', icon: 'CloudRain', score: 3 }, 63: { desc: 'Rain', icon: 'CloudRain', score: 2 },
+      65: { desc: 'Heavy Rain', icon: 'CloudRain', score: 1 }, 66: { desc: 'Freezing Rain', icon: 'Snowflake', score: 1 },
+      71: { desc: 'Light Snow', icon: 'Snowflake', score: 3 }, 73: { desc: 'Snow', icon: 'Snowflake', score: 2 },
+      75: { desc: 'Heavy Snow', icon: 'Snowflake', score: 1 }, 77: { desc: 'Snow Grains', icon: 'Snowflake', score: 2 },
+      80: { desc: 'Light Showers', icon: 'CloudRain', score: 3 }, 81: { desc: 'Showers', icon: 'CloudRain', score: 2 },
+      82: { desc: 'Heavy Showers', icon: 'CloudRain', score: 1 }, 85: { desc: 'Snow Showers', icon: 'Snowflake', score: 2 },
+      95: { desc: 'Thunderstorm', icon: 'CloudLightning', score: 1 }, 96: { desc: 'Hail Storm', icon: 'CloudLightning', score: 0 },
+      99: { desc: 'Severe Storm', icon: 'CloudLightning', score: 0 }
+    };
+    const getWeather = (code) => weatherCodes[code] || { desc: 'Unknown', icon: 'Cloud', score: 3 };
+
     const Icon = ({ name, size = 24, className = "" }) => {
       const ref = React.useRef(null);
       useEffect(() => {
-        if (ref.current) {
+        if (ref.current && lucide.icons[name]) {
           ref.current.innerHTML = '';
           const icon = lucide.createElement(lucide.icons[name]);
           icon.setAttribute('width', size);
@@ -40,904 +95,700 @@
       return <span ref={ref} className="inline-flex items-center justify-center" />;
     };
 
-    const HealthTracker = () => {
-      const [activeTab, setActiveTab] = useState('dashboard');
+    const App = () => {
+      const [tab, setTab] = useState('dashboard');
       const [entries, setEntries] = useState([]);
-      const [showModal, setShowModal] = useState(false);
-      const [modalType, setModalType] = useState('');
-      const [selectedMetric, setSelectedMetric] = useState(null);
-      const [timeRange, setTimeRange] = useState('7d');
+      const [modal, setModal] = useState(null);
+      const [metric, setMetric] = useState(null);
+      const [range, setRange] = useState('30d');
       const [loading, setLoading] = useState(true);
+      const [weather, setWeather] = useState(null);
+      const [locationName, setLocationName] = useState('...');
+      const [moon, setMoon] = useState(getMoonPhase());
+      const [settings, setSettings] = useState(false);
+      const [trakt, setTrakt] = useState({ clientId: '', token: '' });
+      const [corr1, setCorr1] = useState('');
+      const [corr2, setCorr2] = useState('');
+      const [customCorr, setCustomCorr] = useState(null);
 
-      // Load data from localStorage
+      const types = {
+        sauna: { icon: 'Thermometer', color: 'bg-orange-500', label: 'Sauna', cat: 'wellness', unit: 'min', field: 'duration', fields: ['duration', 'temperature'] },
+        coldPlunge: { icon: 'Droplet', color: 'bg-blue-500', label: 'Cold Plunge', cat: 'wellness', unit: 'min', field: 'duration', fields: ['duration', 'temperature'] },
+        workout: { icon: 'Dumbbell', color: 'bg-green-500', label: 'Workout', cat: 'fitness', unit: 'min', field: 'duration' },
+        steps: { icon: 'Footprints', color: 'bg-teal-500', label: 'Steps', cat: 'fitness', unit: 'steps', field: 'value' },
+        activeCalories: { icon: 'Flame', color: 'bg-orange-600', label: 'Active Cal', cat: 'fitness', unit: 'kcal', field: 'value' },
+        exerciseMinutes: { icon: 'Zap', color: 'bg-lime-500', label: 'Exercise', cat: 'fitness', unit: 'min', field: 'value' },
+        distance: { icon: 'MapPin', color: 'bg-emerald-600', label: 'Distance', cat: 'fitness', unit: 'km', field: 'value' },
+        sleep: { icon: 'Moon', color: 'bg-indigo-500', label: 'Sleep', cat: 'vitals', unit: 'hrs', field: 'value' },
+        heartRate: { icon: 'Heart', color: 'bg-red-500', label: 'Heart Rate', cat: 'vitals', unit: 'bpm', field: 'value' },
+        restingHR: { icon: 'Heart', color: 'bg-pink-500', label: 'Resting HR', cat: 'vitals', unit: 'bpm', field: 'value' },
+        hrv: { icon: 'Activity', color: 'bg-purple-600', label: 'HRV', cat: 'vitals', unit: 'ms', field: 'value' },
+        weight: { icon: 'Scale', color: 'bg-slate-600', label: 'Weight', cat: 'vitals', unit: 'kg', field: 'value' },
+        water: { icon: 'Droplet', color: 'bg-cyan-500', label: 'Water', cat: 'nutrition', unit: 'ml', field: 'quantity' },
+        coffee: { icon: 'Coffee', color: 'bg-amber-700', label: 'Coffee', cat: 'nutrition', unit: 'cups', field: 'quantity' },
+        alcohol: { icon: 'Wine', color: 'bg-purple-500', label: 'Alcohol', cat: 'nutrition', unit: 'drinks', field: 'quantity' },
+        mood: { icon: 'Smile', color: 'bg-yellow-500', label: 'Mood', cat: 'mental', unit: '', field: 'mood' },
+        energy: { icon: 'Battery', color: 'bg-amber-500', label: 'Energy', cat: 'mental', unit: '', field: 'energy' },
+        mindfulness: { icon: 'Brain', color: 'bg-violet-500', label: 'Mindfulness', cat: 'mental', unit: 'min', field: 'value' },
+        workHours: { icon: 'Briefcase', color: 'bg-gray-700', label: 'Work Hours', cat: 'productivity', unit: 'hrs', field: 'duration' },
+        meetings: { icon: 'Users', color: 'bg-blue-700', label: 'Meetings', cat: 'productivity', unit: '', field: 'count' },
+        masturbation: { icon: 'Heart', color: 'bg-pink-400', label: 'Masturbation', cat: 'lifestyle', unit: '', field: 'value', simple: true },
+        sexualActivity: { icon: 'Heart', color: 'bg-red-400', label: 'Sexual Activity', cat: 'lifestyle', unit: '', field: 'value', simple: true },
+        vacation: { icon: 'Palmtree', color: 'bg-green-400', label: 'Vacation', cat: 'lifestyle', unit: '', field: 'value', simple: true },
+        weather: { icon: 'Sun', color: 'bg-yellow-400', label: 'Weather', cat: 'auto', unit: '°C', field: 'temperature', auto: true },
+        sunshine: { icon: 'Sun', color: 'bg-amber-400', label: 'Sunshine', cat: 'auto', unit: 'hrs', field: 'value', auto: true },
+        moonPhase: { icon: 'Moon', color: 'bg-gray-500', label: 'Moon Phase', cat: 'auto', unit: '%', field: 'illumination', auto: true },
+        location: { icon: 'MapPin', color: 'bg-blue-600', label: 'Location', cat: 'auto', unit: '', field: 'name', auto: true },
+        billsGame: { icon: 'Trophy', color: 'bg-blue-800', label: 'Bills Game', cat: 'auto', unit: '', field: 'won', auto: true },
+        tvWatched: { icon: 'Tv', color: 'bg-purple-700', label: 'TV (Trakt)', cat: 'entertainment', unit: 'ep', field: 'value', auto: true },
+        movieWatched: { icon: 'Film', color: 'bg-indigo-700', label: 'Movie (Trakt)', cat: 'entertainment', unit: '', field: 'value', auto: true },
+      };
+
+      const moodNum = m => ({ great: 5, good: 4, neutral: 3, low: 2, bad: 1 }[m] || 3);
+      const energyNum = e => ({ 'very-high': 5, high: 4, medium: 3, low: 2, 'very-low': 1 }[e] || 3);
+      const numMood = n => n >= 4.5 ? '😄' : n >= 3.5 ? '🙂' : n >= 2.5 ? '😐' : n >= 1.5 ? '😕' : '😢';
+      const numEnergy = n => n >= 4.5 ? '⚡' : n >= 3.5 ? '🔋' : n >= 2.5 ? '➡️' : n >= 1.5 ? '🔻' : '💤';
+
       useEffect(() => {
-        try {
-          const saved = localStorage.getItem('health-tracker-entries');
-          if (saved) {
-            setEntries(JSON.parse(saved));
-          }
-        } catch (error) {
-          console.error('Failed to load data:', error);
-        }
+        const saved = localStorage.getItem('ht-entries');
+        if (saved) setEntries(JSON.parse(saved));
+        const savedTrakt = localStorage.getItem('ht-trakt');
+        if (savedTrakt) setTrakt(JSON.parse(savedTrakt));
         setLoading(false);
+        initAutoTracking();
       }, []);
 
-      // Save data to localStorage
       useEffect(() => {
-        if (!loading) {
-          try {
-            localStorage.setItem('health-tracker-entries', JSON.stringify(entries));
-          } catch (error) {
-            console.error('Failed to save data:', error);
-          }
-        }
+        if (!loading) localStorage.setItem('ht-entries', JSON.stringify(entries));
       }, [entries, loading]);
 
-      const activityTypes = {
-        sauna: { icon: 'Thermometer', color: 'bg-orange-500', label: 'Sauna', category: 'wellness', unit: 'min', valueField: 'duration' },
-        coldPlunge: { icon: 'Droplet', color: 'bg-blue-500', label: 'Cold Plunge', category: 'wellness', unit: 'min', valueField: 'duration' },
-        workout: { icon: 'Activity', color: 'bg-green-500', label: 'Workout', category: 'fitness', unit: 'min', valueField: 'duration' },
-        steps: { icon: 'Footprints', color: 'bg-teal-500', label: 'Steps', category: 'fitness', unit: 'steps', valueField: 'value' },
-        activeCalories: { icon: 'Flame', color: 'bg-orange-600', label: 'Active Calories', category: 'fitness', unit: 'kcal', valueField: 'value' },
-        totalCalories: { icon: 'Flame', color: 'bg-red-600', label: 'Total Calories', category: 'fitness', unit: 'kcal', valueField: 'value' },
-        exerciseMinutes: { icon: 'Zap', color: 'bg-lime-500', label: 'Exercise Minutes', category: 'fitness', unit: 'min', valueField: 'value' },
-        standHours: { icon: 'Circle', color: 'bg-sky-500', label: 'Stand Hours', category: 'fitness', unit: 'hrs', valueField: 'value' },
-        distance: { icon: 'Mountain', color: 'bg-emerald-600', label: 'Distance', category: 'fitness', unit: 'km', valueField: 'value' },
-        sleep: { icon: 'Moon', color: 'bg-indigo-500', label: 'Sleep', category: 'vitals', unit: 'hrs', valueField: 'value' },
-        heartRate: { icon: 'Heart', color: 'bg-red-500', label: 'Heart Rate', category: 'vitals', unit: 'bpm', valueField: 'value' },
-        restingHeartRate: { icon: 'Heart', color: 'bg-pink-500', label: 'Resting HR', category: 'vitals', unit: 'bpm', valueField: 'value' },
-        hrv: { icon: 'Activity', color: 'bg-purple-600', label: 'HRV', category: 'vitals', unit: 'ms', valueField: 'value' },
-        bloodOxygen: { icon: 'Wind', color: 'bg-blue-400', label: 'Blood Oxygen', category: 'vitals', unit: '%', valueField: 'value' },
-        respiratoryRate: { icon: 'Wind', color: 'bg-cyan-600', label: 'Respiratory Rate', category: 'vitals', unit: 'bpm', valueField: 'value' },
-        vo2Max: { icon: 'TrendingUp', color: 'bg-green-700', label: 'VO2 Max', category: 'vitals', unit: 'ml/kg/min', valueField: 'value' },
-        weight: { icon: 'Scale', color: 'bg-slate-600', label: 'Weight', category: 'vitals', unit: 'kg', valueField: 'value' },
-        water: { icon: 'Droplet', color: 'bg-cyan-500', label: 'Water', category: 'nutrition', unit: 'ml', valueField: 'quantity' },
-        coffee: { icon: 'Coffee', color: 'bg-amber-700', label: 'Coffee', category: 'nutrition', unit: 'cups', valueField: 'quantity' },
-        alcohol: { icon: 'Wine', color: 'bg-purple-500', label: 'Alcohol', category: 'nutrition', unit: 'drinks', valueField: 'quantity' },
-        mood: { icon: 'Smile', color: 'bg-yellow-500', label: 'Mood', category: 'mental', unit: '', valueField: 'mood' },
-        mindfulMinutes: { icon: 'Brain', color: 'bg-violet-500', label: 'Mindful Minutes', category: 'mental', unit: 'min', valueField: 'value' },
-        energy: { icon: 'Battery', color: 'bg-amber-500', label: 'Energy Level', category: 'mental', unit: '', valueField: 'energy' },
-        workHours: { icon: 'Briefcase', color: 'bg-gray-700', label: 'Work Hours', category: 'productivity', unit: 'hrs', valueField: 'duration' },
-        meetings: { icon: 'Users', color: 'bg-blue-700', label: 'Meetings', category: 'productivity', unit: '', valueField: 'meetingCount' }
-      };
+      const todayKey = () => getZurichDate().toDateString();
+      const hasToday = (type) => entries.some(e => e.type === type && new Date(e.ts).toDateString() === todayKey());
 
-      const moodToNumber = (mood) => {
-        const mapping = { 'great': 5, 'good': 4, 'neutral': 3, 'low': 2, 'bad': 1 };
-        return mapping[mood] || 3;
-      };
-
-      const energyToNumber = (energy) => {
-        const mapping = { 'very-high': 5, 'high': 4, 'medium': 3, 'low': 2, 'very-low': 1 };
-        return mapping[energy] || 3;
-      };
-
-      const numberToMood = (num) => {
-        if (num >= 4.5) return '😄 Great';
-        if (num >= 3.5) return '🙂 Good';
-        if (num >= 2.5) return '😐 Neutral';
-        if (num >= 1.5) return '😕 Low';
-        return '😢 Bad';
-      };
-
-      const numberToEnergy = (num) => {
-        if (num >= 4.5) return '⚡ Very High';
-        if (num >= 3.5) return '🔋 High';
-        if (num >= 2.5) return '➡️ Medium';
-        if (num >= 1.5) return '🔻 Low';
-        return '💤 Very Low';
-      };
-
-      const getFilteredEntries = (type, range) => {
-        const now = new Date();
-        let startDate = new Date();
+      const initAutoTracking = async () => {
+        setMoon(getMoonPhase());
         
-        switch (range) {
-          case '7d': startDate.setDate(now.getDate() - 7); break;
-          case '30d': startDate.setDate(now.getDate() - 30); break;
-          case '90d': startDate.setDate(now.getDate() - 90); break;
-          case 'all': startDate = new Date(0); break;
-          default: startDate.setDate(now.getDate() - 7);
+        if (!hasToday('moonPhase')) {
+          const m = getMoonPhase();
+          addEntry({ type: 'moonPhase', illumination: m.illumination, phase: m.name, auto: true });
         }
 
-        return entries
-          .filter(e => e.type === type && new Date(e.timestamp) >= startDate)
-          .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(async pos => {
+            const { latitude: lat, longitude: lon } = pos.coords;
+            const locName = getLocationName(lat, lon);
+            setLocationName(locName);
+            
+            if (!hasToday('location')) {
+              addEntry({ type: 'location', name: locName, lat, lon, auto: true });
+            }
+
+            try {
+              const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&daily=sunshine_duration&timezone=Europe/Zurich`);
+              const data = await res.json();
+              setWeather(data);
+              
+              if (!hasToday('weather') && data.current) {
+                addEntry({ type: 'weather', temperature: data.current.temperature_2m, humidity: data.current.relative_humidity_2m, code: data.current.weather_code, wind: data.current.wind_speed_10m, auto: true });
+              }
+              if (!hasToday('sunshine') && data.daily?.sunshine_duration?.[0]) {
+                addEntry({ type: 'sunshine', value: Math.round(data.daily.sunshine_duration[0] / 360) / 10, auto: true });
+              }
+            } catch (e) { console.error('Weather error:', e); }
+          }, () => setLocationName('Unknown'));
+        }
+
+        fetchBillsGame();
       };
 
-      const getChartData = (type) => {
-        const filtered = getFilteredEntries(type, timeRange);
-        const metricInfo = activityTypes[type];
-        
-        const grouped = {};
-        filtered.forEach(entry => {
-          const date = new Date(entry.timestamp).toLocaleDateString();
-          if (!grouped[date]) grouped[date] = [];
+      const fetchBillsGame = async () => {
+        try {
+          const res = await fetch('https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/buf/schedule');
+          const data = await res.json();
+          const completed = data.events?.filter(e => e.competitions?.[0]?.status?.type?.completed) || [];
+          if (completed.length > 0) {
+            const last = completed[completed.length - 1];
+            const comp = last.competitions[0];
+            const bills = comp.competitors.find(c => c.team.abbreviation === 'BUF');
+            const opp = comp.competitors.find(c => c.team.abbreviation !== 'BUF');
+            if (bills && opp) {
+              const won = parseInt(bills.score) > parseInt(opp.score);
+              const gameDate = new Date(last.date).toDateString();
+              const hasGame = entries.some(e => e.type === 'billsGame' && new Date(e.ts).toDateString() === gameDate);
+              if (!hasGame) {
+                addEntry({ type: 'billsGame', won: won ? 1 : 0, score: `${bills.score}-${opp.score}`, opponent: opp.team.displayName, auto: true, ts: new Date(last.date).toISOString() });
+              }
+            }
+          }
+        } catch (e) { console.error('Bills error:', e); }
+      };
+
+      const addEntry = (data) => {
+        const entry = { id: Date.now() + Math.random(), ts: data.ts || new Date().toISOString(), ...data };
+        setEntries(prev => [entry, ...prev]);
+      };
+      const delEntry = (id) => setEntries(prev => prev.filter(e => e.id !== id));
+
+      const getFiltered = (type, r = range) => {
+        const now = getZurichDate();
+        let start = new Date(now);
+        if (r === '7d') start.setDate(now.getDate() - 7);
+        else if (r === '30d') start.setDate(now.getDate() - 30);
+        else if (r === '90d') start.setDate(now.getDate() - 90);
+        else start = new Date(0);
+        return entries.filter(e => e.type === type && new Date(e.ts) >= start).sort((a, b) => new Date(a.ts) - new Date(b.ts));
+      };
+
+      const getDailyData = () => {
+        const daily = {};
+        entries.forEach(e => {
+          const day = new Date(e.ts).toDateString();
+          if (!daily[day]) daily[day] = {};
+          const t = types[e.type];
+          if (!t) return;
           
-          let value;
-          if (type === 'mood') value = moodToNumber(entry.mood);
-          else if (type === 'energy') value = energyToNumber(entry.energy);
-          else value = parseFloat(entry[metricInfo.valueField]) || 0;
-          grouped[date].push(value);
+          let val;
+          if (e.type === 'mood') val = moodNum(e.mood);
+          else if (e.type === 'energy') val = energyNum(e.energy);
+          else if (e.type === 'weather') { daily[day].weatherScore = getWeather(e.code).score; daily[day].temperature = e.temperature; daily[day].wind = e.wind; return; }
+          else if (e.type === 'moonPhase') { daily[day].moonIllum = e.illumination; return; }
+          else if (e.type === 'location') { daily[day].atWork = e.name === 'Work' ? 1 : 0; daily[day].atHome = e.name === 'Home' ? 1 : 0; return; }
+          else if (e.type === 'billsGame') { daily[day].billsWon = e.won; return; }
+          else if (t.simple) val = 1;
+          else val = parseFloat(e[t.field]) || 0;
+
+          const sum = ['steps', 'activeCalories', 'exerciseMinutes', 'water', 'coffee', 'alcohol', 'mindfulness', 'workHours', 'meetings', 'sauna', 'coldPlunge', 'workout', 'distance', 'masturbation', 'sexualActivity', 'tvWatched', 'movieWatched'].includes(e.type);
+          if (sum) daily[day][e.type] = (daily[day][e.type] || 0) + val;
+          else {
+            if (!daily[day][e.type]) daily[day][e.type] = { s: 0, n: 0 };
+            daily[day][e.type].s += val;
+            daily[day][e.type].n++;
+          }
+          if (e.type === 'vacation') daily[day].isVacation = 1;
         });
-
-        const shouldSum = ['steps', 'activeCalories', 'totalCalories', 'exerciseMinutes', 'water', 'coffee', 'alcohol', 'mindfulMinutes', 'workHours', 'meetings', 'sauna', 'coldPlunge', 'workout', 'distance'].includes(type);
         
-        return Object.entries(grouped).map(([date, values]) => ({
-          date,
-          value: Math.round((shouldSum ? values.reduce((a, b) => a + b, 0) : values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10
-        }));
+        Object.values(daily).forEach(d => {
+          Object.keys(d).forEach(k => {
+            if (d[k]?.n) d[k] = d[k].s / d[k].n;
+          });
+        });
+        return daily;
       };
 
-      const getMetricStats = (type) => {
-        const data = getChartData(type);
-        if (data.length === 0) return null;
-
-        const values = data.map(d => d.value);
-        return {
-          avg: Math.round(values.reduce((a, b) => a + b, 0) / values.length * 10) / 10,
-          max: Math.round(Math.max(...values) * 10) / 10,
-          min: Math.round(Math.min(...values) * 10) / 10,
-          latest: Math.round(values[values.length - 1] * 10) / 10,
-          total: Math.round(values.reduce((a, b) => a + b, 0) * 10) / 10,
-          count: data.length
-        };
+      const calcCorr = (x, y) => {
+        if (x.length < 5) return null;
+        const n = x.length;
+        const sx = x.reduce((a, b) => a + b, 0), sy = y.reduce((a, b) => a + b, 0);
+        const sxy = x.reduce((a, xi, i) => a + xi * y[i], 0);
+        const sx2 = x.reduce((a, xi) => a + xi * xi, 0), sy2 = y.reduce((a, yi) => a + yi * yi, 0);
+        const num = n * sxy - sx * sy;
+        const den = Math.sqrt((n * sx2 - sx * sx) * (n * sy2 - sy * sy));
+        return den === 0 ? null : num / den;
       };
 
-      const SimpleLineChart = ({ data, type }) => {
-        if (!data || data.length === 0) {
-          return (
-            <div className="h-64 flex items-center justify-center text-gray-500">
-              <div className="text-center">
-                <Icon name="BarChart3" size={48} className="mx-auto mb-2 opacity-50" />
-                <p>No data available for this time range</p>
-              </div>
-            </div>
-          );
+      const correlations = useMemo(() => {
+        const daily = getDailyData();
+        const days = Object.keys(daily);
+        const pairs = [
+          ['alcohol', 'mood'], ['alcohol', 'energy'], ['alcohol', 'sleep'], ['alcohol', 'hrv'],
+          ['coffee', 'energy'], ['coffee', 'mood'], ['coffee', 'sleep'],
+          ['workHours', 'energy'], ['workHours', 'mood'], ['workHours', 'sleep'],
+          ['meetings', 'energy'], ['meetings', 'mood'],
+          ['workout', 'mood'], ['workout', 'energy'], ['workout', 'sleep'],
+          ['exerciseMinutes', 'mood'], ['exerciseMinutes', 'energy'],
+          ['steps', 'mood'], ['steps', 'energy'], ['steps', 'sleep'],
+          ['sleep', 'mood'], ['sleep', 'energy'], ['sleep', 'hrv'],
+          ['sauna', 'mood'], ['sauna', 'sleep'], ['sauna', 'hrv'],
+          ['coldPlunge', 'mood'], ['coldPlunge', 'energy'], ['coldPlunge', 'hrv'],
+          ['water', 'energy'], ['water', 'mood'],
+          ['mindfulness', 'mood'], ['mindfulness', 'energy'], ['mindfulness', 'sleep'],
+          ['weatherScore', 'mood'], ['weatherScore', 'energy'], ['weatherScore', 'steps'],
+          ['temperature', 'mood'], ['temperature', 'energy'], ['temperature', 'sleep'],
+          ['sunshine', 'mood'], ['sunshine', 'energy'],
+          ['moonIllum', 'mood'], ['moonIllum', 'energy'], ['moonIllum', 'sleep'],
+          ['masturbation', 'mood'], ['masturbation', 'energy'], ['masturbation', 'sleep'],
+          ['sexualActivity', 'mood'], ['sexualActivity', 'energy'], ['sexualActivity', 'sleep'],
+          ['isVacation', 'mood'], ['isVacation', 'energy'], ['isVacation', 'sleep'], ['isVacation', 'hrv'],
+          ['billsWon', 'mood'], ['billsWon', 'energy'], ['billsWon', 'alcohol'],
+          ['atWork', 'mood'], ['atWork', 'energy'], ['atWork', 'steps'],
+          ['wind', 'mood'], ['wind', 'energy'],
+          ['tvWatched', 'mood'], ['tvWatched', 'sleep'],
+        ];
+        
+        const results = [];
+        pairs.forEach(([cause, effect]) => {
+          const xs = [], ys = [];
+          days.forEach(d => {
+            if (daily[d][cause] !== undefined && daily[d][effect] !== undefined) {
+              xs.push(daily[d][cause]);
+              ys.push(daily[d][effect]);
+            }
+          });
+          if (xs.length >= 5) {
+            const c = calcCorr(xs, ys);
+            if (c !== null && Math.abs(c) >= 0.15) {
+              results.push({
+                cause, effect, corr: Math.round(c * 100) / 100, n: xs.length,
+                strength: Math.abs(c) >= 0.7 ? 'strong' : Math.abs(c) >= 0.4 ? 'moderate' : 'weak',
+                dir: c > 0 ? 'positive' : 'negative'
+              });
+            }
+          }
+        });
+        return results.sort((a, b) => Math.abs(b.corr) - Math.abs(a.corr));
+      }, [entries]);
+
+      const findCustomCorr = () => {
+        if (!corr1 || !corr2) return;
+        const daily = getDailyData();
+        const xs = [], ys = [];
+        Object.keys(daily).forEach(d => {
+          if (daily[d][corr1] !== undefined && daily[d][corr2] !== undefined) {
+            xs.push(daily[d][corr1]);
+            ys.push(daily[d][corr2]);
+          }
+        });
+        if (xs.length >= 5) {
+          const c = calcCorr(xs, ys);
+          setCustomCorr({ corr: c, n: xs.length, m1: corr1, m2: corr2 });
+        } else {
+          setCustomCorr({ error: `Need 5+ days, found ${xs.length}`, m1: corr1, m2: corr2 });
         }
+      };
 
-        const values = data.map(d => d.value);
-        const maxVal = Math.max(...values);
-        const minVal = Math.min(...values);
-        const range = maxVal - minVal || 1;
+      const allMetrics = ['mood', 'energy', 'sleep', 'hrv', 'restingHR', 'heartRate', 'steps', 'exerciseMinutes', 'workout', 'activeCalories', 'water', 'coffee', 'alcohol', 'workHours', 'meetings', 'mindfulness', 'sauna', 'coldPlunge', 'masturbation', 'sexualActivity', 'isVacation', 'weatherScore', 'temperature', 'sunshine', 'moonIllum', 'wind', 'atWork', 'atHome', 'billsWon', 'tvWatched', 'movieWatched', 'weight', 'distance'];
+
+      const calcStress = () => {
+        const today = todayKey();
+        const todayEntries = entries.filter(e => new Date(e.ts).toDateString() === today);
+        let stress = 50;
+        const factors = [];
         
-        const padding = 40;
-        const chartWidth = 100;
-        const chartHeight = 60;
+        const hrv = todayEntries.filter(e => e.type === 'hrv');
+        if (hrv.length) {
+          const avg = hrv.reduce((s, e) => s + (parseFloat(e.value) || 0), 0) / hrv.length;
+          if (avg < 20) { stress += 25; factors.push('Very low HRV'); }
+          else if (avg < 35) { stress += 15; factors.push('Low HRV'); }
+          else if (avg >= 55) { stress -= 15; factors.push('Excellent HRV'); }
+        }
         
-        const points = data.map((d, i) => ({
-          x: padding + (i / (data.length - 1 || 1)) * (chartWidth - padding * 2),
-          y: chartHeight - padding - ((d.value - minVal) / range) * (chartHeight - padding * 2),
-          ...d
-        }));
+        const rhr = todayEntries.filter(e => e.type === 'restingHR');
+        if (rhr.length) {
+          const avg = rhr.reduce((s, e) => s + (parseFloat(e.value) || 0), 0) / rhr.length;
+          if (avg > 75) { stress += 15; factors.push('High resting HR'); }
+          else if (avg < 55) { stress -= 10; factors.push('Low resting HR'); }
+        }
+        
+        const work = todayEntries.filter(e => e.type === 'workHours').reduce((s, e) => s + (parseFloat(e.duration) || 0), 0);
+        if (work > 10) { stress += 20; factors.push('Very long work day'); }
+        else if (work > 8) { stress += 10; factors.push('Long work day'); }
+        
+        const mtg = todayEntries.filter(e => e.type === 'meetings').reduce((s, e) => s + (parseFloat(e.count) || 0), 0);
+        if (mtg > 5) { stress += 15; factors.push('Many meetings'); }
+        else if (mtg > 3) { stress += 8; factors.push('Several meetings'); }
+        
+        const slp = todayEntries.find(e => e.type === 'sleep');
+        if (slp) {
+          const hrs = parseFloat(slp.value) || 0;
+          if (hrs < 5) { stress += 20; factors.push('Very poor sleep'); }
+          else if (hrs < 6) { stress += 12; factors.push('Poor sleep'); }
+          else if (hrs >= 7.5) { stress -= 10; factors.push('Good sleep'); }
+        }
+        
+        const coffee = todayEntries.filter(e => e.type === 'coffee').reduce((s, e) => s + (parseFloat(e.quantity) || 0), 0);
+        if (coffee > 4) { stress += 8; factors.push('High caffeine'); }
+        
+        const exercise = todayEntries.filter(e => e.type === 'exerciseMinutes').reduce((s, e) => s + (parseFloat(e.value) || 0), 0);
+        if (exercise >= 30) { stress -= 15; factors.push('Good exercise'); }
+        
+        const mindful = todayEntries.filter(e => e.type === 'mindfulness').reduce((s, e) => s + (parseFloat(e.value) || 0), 0);
+        if (mindful >= 10) { stress -= 12; factors.push('Mindfulness'); }
+        
+        if (todayEntries.some(e => e.type === 'vacation')) { stress -= 20; factors.push('Vacation day'); }
+        
+        return { score: Math.max(0, Math.min(100, Math.round(stress))), factors };
+      };
 
-        const pathD = points.length > 1 ? `M ${points.map(p => `${p.x} ${p.y}`).join(' L ')}` : '';
-        const areaD = points.length > 1
-          ? `M ${points[0].x} ${chartHeight - padding} L ${points.map(p => `${p.x} ${p.y}`).join(' L ')} L ${points[points.length - 1].x} ${chartHeight - padding} Z`
-          : '';
+      const calcWellness = () => {
+        const today = todayKey();
+        const todayEntries = entries.filter(e => new Date(e.ts).toDateString() === today);
+        let score = 50;
+        const bd = [];
+        
+        // Get dynamic impacts from correlations
+        const weatherCorr = correlations.find(c => c.cause === 'weatherScore' && c.effect === 'mood');
+        const sunCorr = correlations.find(c => c.cause === 'sunshine' && c.effect === 'mood');
+        const moonCorr = correlations.find(c => c.cause === 'moonIllum' && c.effect === 'mood');
+        
+        if (todayEntries.some(e => e.type === 'workout')) { score += 12; bd.push({ f: 'Workout', i: 12, p: true }); }
+        if (todayEntries.some(e => e.type === 'sauna')) { score += 8; bd.push({ f: 'Sauna', i: 8, p: true }); }
+        if (todayEntries.some(e => e.type === 'coldPlunge')) { score += 8; bd.push({ f: 'Cold Plunge', i: 8, p: true }); }
+        
+        const steps = todayEntries.filter(e => e.type === 'steps').reduce((s, e) => s + (parseFloat(e.value) || 0), 0);
+        if (steps >= 10000) { score += 10; bd.push({ f: '10k Steps', i: 10, p: true }); }
+        else if (steps >= 5000) { score += 5; bd.push({ f: '5k Steps', i: 5, p: true }); }
+        
+        const slp = todayEntries.find(e => e.type === 'sleep');
+        if (slp) {
+          const hrs = parseFloat(slp.value) || 0;
+          if (hrs >= 7 && hrs <= 9) { score += 15; bd.push({ f: 'Good Sleep', i: 15, p: true }); }
+          else if (hrs < 6) { score -= 10; bd.push({ f: 'Poor Sleep', i: -10, p: false }); }
+        }
+        
+        const water = todayEntries.filter(e => e.type === 'water').reduce((s, e) => s + (parseFloat(e.quantity) || 0), 0);
+        if (water >= 2000) { score += 8; bd.push({ f: 'Hydrated', i: 8, p: true }); }
+        
+        const alc = todayEntries.filter(e => e.type === 'alcohol').reduce((s, e) => s + (parseFloat(e.quantity) || 0), 0);
+        if (alc > 0) { const pen = Math.min(alc * 6, 15); score -= pen; bd.push({ f: 'Alcohol', i: -pen, p: false }); }
+        
+        if (todayEntries.some(e => e.type === 'vacation')) { score += 10; bd.push({ f: 'Vacation', i: 10, p: true }); }
+        
+        // Dynamic weather impact based on correlations
+        const wx = todayEntries.find(e => e.type === 'weather');
+        if (wx && weatherCorr) {
+          const wxScore = getWeather(wx.code).score;
+          const impact = Math.round((wxScore - 3) * weatherCorr.corr * 3);
+          if (impact !== 0) { score += impact; bd.push({ f: 'Weather', i: impact, p: impact > 0 }); }
+        }
+        
+        // Dynamic sunshine impact
+        const sun = todayEntries.find(e => e.type === 'sunshine');
+        if (sun && sunCorr) {
+          const hrs = parseFloat(sun.value) || 0;
+          const impact = Math.round((hrs - 4) * sunCorr.corr * 2);
+          if (impact !== 0) { score += impact; bd.push({ f: 'Sunshine', i: impact, p: impact > 0 }); }
+        }
+        
+        // Dynamic moon impact
+        const moonE = todayEntries.find(e => e.type === 'moonPhase');
+        if (moonE && moonCorr) {
+          const impact = Math.round((moonE.illumination - 50) / 50 * moonCorr.corr * 3);
+          if (Math.abs(impact) >= 1) { score += impact; bd.push({ f: 'Moon', i: impact, p: impact > 0 }); }
+        }
+        
+        // Bills impact
+        const bills = todayEntries.find(e => e.type === 'billsGame');
+        if (bills) {
+          if (bills.won) { score += 8; bd.push({ f: 'Bills Won! 🏈', i: 8, p: true }); }
+          else { score -= 5; bd.push({ f: 'Bills Lost', i: -5, p: false }); }
+        }
+        
+        return { score: Math.max(0, Math.min(100, Math.round(score))), breakdown: bd };
+      };
 
+      const stress = calcStress();
+      const wellness = calcWellness();
+
+      const todayStats = useMemo(() => {
+        const today = todayKey();
+        const te = entries.filter(e => new Date(e.ts).toDateString() === today);
+        return {
+          steps: te.filter(e => e.type === 'steps').reduce((s, e) => s + (parseFloat(e.value) || 0), 0),
+          cal: te.filter(e => e.type === 'activeCalories').reduce((s, e) => s + (parseFloat(e.value) || 0), 0),
+          exercise: te.filter(e => e.type === 'exerciseMinutes').reduce((s, e) => s + (parseFloat(e.value) || 0), 0),
+          water: te.filter(e => e.type === 'water').reduce((s, e) => s + (parseFloat(e.quantity) || 0), 0),
+        };
+      }, [entries]);
+
+      const manualCats = { wellness: ['sauna', 'coldPlunge'], fitness: ['workout', 'steps', 'activeCalories', 'exerciseMinutes', 'distance'], vitals: ['sleep', 'heartRate', 'restingHR', 'hrv', 'weight'], nutrition: ['water', 'coffee', 'alcohol'], mental: ['mood', 'energy', 'mindfulness'], productivity: ['workHours', 'meetings'], lifestyle: ['masturbation', 'sexualActivity', 'vacation'] };
+      const allCats = { ...manualCats, environment: ['weather', 'sunshine', 'moonPhase', 'location'], sports: ['billsGame'], entertainment: ['tvWatched', 'movieWatched'] };
+
+      const stressColor = s => s >= 70 ? 'text-red-500' : s >= 50 ? 'text-orange-500' : s >= 30 ? 'text-yellow-500' : 'text-green-500';
+      const stressLabel = s => s >= 70 ? 'High' : s >= 50 ? 'Moderate' : s >= 30 ? 'Low' : 'Calm';
+
+      const Chart = ({ type }) => {
+        const info = types[type];
+        const data = getFiltered(type);
+        if (!data.length) return <div className="h-48 flex items-center justify-center text-gray-400">No data</div>;
+        
+        const hasMulti = info.fields?.length > 1;
+        const grouped = {};
+        data.forEach(e => {
+          const d = new Date(e.ts).toLocaleDateString('de-CH');
+          if (!grouped[d]) grouped[d] = hasMulti ? info.fields.map(() => []) : [];
+          if (hasMulti) info.fields.forEach((f, i) => grouped[d][i].push(parseFloat(e[f]) || 0));
+          else {
+            let v = e.type === 'mood' ? moodNum(e.mood) : e.type === 'energy' ? energyNum(e.energy) : parseFloat(e[info.field]) || (info.simple ? 1 : 0);
+            grouped[d].push(v);
+          }
+        });
+        
+        const chartData = Object.entries(grouped).map(([date, vals]) => {
+          if (hasMulti) return { date, values: vals.map(arr => arr.length ? arr.reduce((a,b) => a+b, 0) / arr.length : 0) };
+          const sum = ['steps', 'activeCalories', 'exerciseMinutes', 'water', 'coffee', 'alcohol', 'mindfulness', 'workHours', 'meetings', 'sauna', 'coldPlunge', 'workout', 'distance', 'masturbation', 'sexualActivity', 'tvWatched'].includes(type);
+          return { date, value: sum ? vals.reduce((a,b) => a+b, 0) : vals.reduce((a,b) => a+b, 0) / vals.length };
+        });
+        
+        const allVals = hasMulti ? chartData.flatMap(d => d.values) : chartData.map(d => d.value);
+        const max = Math.max(...allVals), min = Math.min(...allVals);
+        const rng = max - min || 1;
+        const colors = ['#3b82f6', '#f97316'];
+        
         return (
-          <div className="relative">
-            <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} className="w-full h-64">
-              {[0, 0.25, 0.5, 0.75, 1].map((ratio, i) => {
-                const y = padding + ratio * (chartHeight - padding * 2);
-                const value = maxVal - ratio * range;
-                return (
-                  <g key={i}>
-                    <line x1={padding} y1={y} x2={chartWidth - padding} y2={y} stroke="#e5e7eb" strokeWidth="0.2" />
-                    <text x={padding - 2} y={y + 1} fontSize="2.5" fill="#9ca3af" textAnchor="end">
-                      {type === 'mood' ? numberToMood(value).split(' ')[0] : 
-                       type === 'energy' ? numberToEnergy(value).split(' ')[0] : Math.round(value)}
-                    </text>
-                  </g>
-                );
-              })}
-              {points.length > 1 && <path d={areaD} fill="url(#gradient)" opacity="0.3" />}
-              {points.length > 1 && <path d={pathD} fill="none" stroke="#3b82f6" strokeWidth="0.8" strokeLinecap="round" strokeLinejoin="round" />}
-              {points.map((p, i) => (
-                <g key={i}>
-                  <circle cx={p.x} cy={p.y} r="1.2" fill="#3b82f6" />
-                  {data.length <= 14 && (
-                    <text x={p.x} y={chartHeight - padding + 4} fontSize="2" fill="#6b7280" textAnchor="middle">
-                      {new Date(p.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                    </text>
-                  )}
+          <div>
+            {hasMulti && <div className="flex gap-4 mb-2 text-xs">{info.fields.map((f, i) => <span key={f} className="flex items-center gap-1"><span className="w-2 h-2 rounded" style={{background: colors[i]}}></span>{f}</span>)}</div>}
+            <svg viewBox="0 0 100 50" className="w-full h-48">
+              {[0, .5, 1].map((r, i) => <line key={i} x1="10" y1={5 + r * 40} x2="95" y2={5 + r * 40} stroke="#e5e7eb" strokeWidth=".2" />)}
+              {hasMulti ? info.fields.map((f, fi) => {
+                const pts = chartData.map((d, i) => ({ x: 10 + (i / (chartData.length - 1 || 1)) * 85, y: 45 - ((d.values[fi] - min) / rng) * 40 }));
+                return <g key={f}><path d={`M ${pts.map(p => `${p.x} ${p.y}`).join(' L ')}`} fill="none" stroke={colors[fi]} strokeWidth=".8" />{pts.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r=".8" fill={colors[fi]} />)}</g>;
+              }) : (
+                <g>
+                  <path d={`M ${chartData.map((d, i) => `${10 + (i / (chartData.length - 1 || 1)) * 85} ${45 - ((d.value - min) / rng) * 40}`).join(' L ')}`} fill="none" stroke="#3b82f6" strokeWidth=".8" />
+                  {chartData.map((d, i) => <circle key={i} cx={10 + (i / (chartData.length - 1 || 1)) * 85} cy={45 - ((d.value - min) / rng) * 40} r=".8" fill="#3b82f6" />)}
                 </g>
-              ))}
-              <defs>
-                <linearGradient id="gradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                  <stop offset="0%" stopColor="#3b82f6" />
-                  <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
-                </linearGradient>
-              </defs>
+              )}
             </svg>
           </div>
         );
       };
 
-      const MetricDetailView = ({ type, onBack }) => {
-        const metricInfo = activityTypes[type];
-        const data = getChartData(type);
-        const stats = getMetricStats(type);
-        const recentEntries = getFilteredEntries(type, timeRange);
-        const shouldShowTotal = ['steps', 'activeCalories', 'totalCalories', 'exerciseMinutes', 'water', 'coffee', 'alcohol', 'mindfulMinutes', 'workHours', 'meetings', 'sauna', 'coldPlunge', 'workout', 'distance'].includes(type);
-
+      const Modal = ({ type, onClose }) => {
+        const info = types[type];
+        const [form, setForm] = useState({ date: new Date().toISOString().slice(0, 16), duration: '', temperature: '', value: '', quantity: '', mood: 'neutral', energy: 'medium', count: '', notes: '' });
+        const save = () => {
+          const entry = { type, ...form };
+          if (info.simple) entry.value = 1;
+          addEntry(entry);
+          onClose();
+        };
         return (
-          <div className="space-y-6">
-            <div className="flex items-center gap-4">
-              <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg transition">
-                <Icon name="ChevronLeft" size={24} />
-              </button>
-              <div className={`${metricInfo.color} p-3 rounded-xl text-white`}>
-                <Icon name={metricInfo.icon} size={28} />
-              </div>
-              <div>
-                <h2 className="text-2xl font-bold">{metricInfo.label}</h2>
-                <p className="text-gray-600">{metricInfo.category.charAt(0).toUpperCase() + metricInfo.category.slice(1)}</p>
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-xl w-full max-w-sm p-5">
+              <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg">{info.label}</h3><button onClick={onClose}><Icon name="X" size={20} /></button></div>
+              <div className="space-y-3">
+                <input type="datetime-local" value={form.date} onChange={e => setForm({...form, date: e.target.value})} className="w-full border rounded p-2 text-sm" />
+                {info.fields?.includes('duration') && <input type="number" placeholder="Duration (min)" value={form.duration} onChange={e => setForm({...form, duration: e.target.value})} className="w-full border rounded p-2 text-sm" />}
+                {info.fields?.includes('temperature') && <input type="number" placeholder="Temperature (°C)" value={form.temperature} onChange={e => setForm({...form, temperature: e.target.value})} className="w-full border rounded p-2 text-sm" />}
+                {type === 'mood' && <select value={form.mood} onChange={e => setForm({...form, mood: e.target.value})} className="w-full border rounded p-2 text-sm"><option value="great">😄 Great</option><option value="good">🙂 Good</option><option value="neutral">😐 Neutral</option><option value="low">😕 Low</option><option value="bad">😢 Bad</option></select>}
+                {type === 'energy' && <select value={form.energy} onChange={e => setForm({...form, energy: e.target.value})} className="w-full border rounded p-2 text-sm"><option value="very-high">⚡ Very High</option><option value="high">🔋 High</option><option value="medium">➡️ Medium</option><option value="low">🔻 Low</option><option value="very-low">💤 Very Low</option></select>}
+                {info.field === 'value' && !info.simple && <input type="number" placeholder={info.unit || 'Value'} value={form.value} onChange={e => setForm({...form, value: e.target.value})} className="w-full border rounded p-2 text-sm" />}
+                {info.field === 'quantity' && <input type="number" placeholder={info.unit} value={form.quantity} onChange={e => setForm({...form, quantity: e.target.value})} className="w-full border rounded p-2 text-sm" />}
+                {info.field === 'duration' && !info.fields && <input type="number" placeholder="Hours" value={form.duration} onChange={e => setForm({...form, duration: e.target.value})} className="w-full border rounded p-2 text-sm" />}
+                {info.field === 'count' && <input type="number" placeholder="Count" value={form.count} onChange={e => setForm({...form, count: e.target.value})} className="w-full border rounded p-2 text-sm" />}
+                {info.simple && <p className="text-center text-gray-500 text-sm py-2">Tap Save to log</p>}
+                <button onClick={save} className="w-full bg-blue-600 text-white rounded p-2 font-medium">Save</button>
               </div>
             </div>
+          </div>
+        );
+      };
 
-            <div className="flex gap-2 flex-wrap">
-              {[{ value: '7d', label: '7 Days' }, { value: '30d', label: '30 Days' }, { value: '90d', label: '90 Days' }, { value: 'all', label: 'All Time' }].map(option => (
-                <button
-                  key={option.value}
-                  onClick={() => setTimeRange(option.value)}
-                  className={`px-4 py-2 rounded-lg font-medium transition ${timeRange === option.value ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-                >
-                  {option.label}
-                </button>
-              ))}
+      const Detail = ({ type, onBack }) => {
+        const info = types[type];
+        const data = getFiltered(type);
+        return (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3">
+              <button onClick={onBack} className="p-1"><Icon name="ChevronLeft" size={24} /></button>
+              <div className={`${info.color} p-2 rounded-lg text-white`}><Icon name={info.icon} size={20} /></div>
+              <h2 className="text-xl font-bold">{info.label}</h2>
             </div>
+            <div className="flex gap-2">{['7d', '30d', '90d', 'all'].map(r => <button key={r} onClick={() => setRange(r)} className={`px-3 py-1 rounded text-sm ${range === r ? 'bg-blue-600 text-white' : 'bg-gray-100'}`}>{r}</button>)}</div>
+            <div className="bg-white p-4 rounded-xl shadow"><Chart type={type} /></div>
+            <div className="bg-white p-4 rounded-xl shadow">
+              <h3 className="font-bold mb-3">Recent ({data.length})</h3>
+              <div className="space-y-2 max-h-64 overflow-auto">
+                {data.slice().reverse().slice(0, 20).map(e => (
+                  <div key={e.id} className="flex justify-between items-center p-2 bg-gray-50 rounded text-sm">
+                    <div>
+                      <div className="font-medium">{type === 'mood' ? numMood(moodNum(e.mood)) : type === 'energy' ? numEnergy(energyNum(e.energy)) : type === 'weather' ? `${e.temperature}°C ${getWeather(e.code).desc}` : type === 'moonPhase' ? `${e.phase} ${e.illumination}%` : type === 'billsGame' ? `${e.won ? 'Won' : 'Lost'} ${e.score}` : info.simple ? '✓' : info.fields ? info.fields.map(f => e[f]).join('/') : `${e[info.field]} ${info.unit}`}</div>
+                      <div className="text-xs text-gray-500">{formatDate(e.ts)}</div>
+                    </div>
+                    {!e.auto && <button onClick={() => delEntry(e.id)} className="text-red-400"><Icon name="X" size={16} /></button>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      };
 
-            {stats && (
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="bg-white p-4 rounded-lg shadow">
-                  <div className="text-sm text-gray-600 mb-1">Latest</div>
-                  <div className="text-2xl font-bold">
-                    {type === 'mood' ? numberToMood(stats.latest) : type === 'energy' ? numberToEnergy(stats.latest) : `${stats.latest} ${metricInfo.unit}`}
-                  </div>
-                </div>
-                <div className="bg-white p-4 rounded-lg shadow">
-                  <div className="text-sm text-gray-600 mb-1">Average</div>
-                  <div className="text-2xl font-bold">
-                    {type === 'mood' ? numberToMood(stats.avg) : type === 'energy' ? numberToEnergy(stats.avg) : `${stats.avg} ${metricInfo.unit}`}
-                  </div>
-                </div>
-                {shouldShowTotal ? (
-                  <div className="bg-white p-4 rounded-lg shadow">
-                    <div className="text-sm text-gray-600 mb-1">Total</div>
-                    <div className="text-2xl font-bold">{stats.total.toLocaleString()} {metricInfo.unit}</div>
-                  </div>
-                ) : (
-                  <>
-                    <div className="bg-white p-4 rounded-lg shadow">
-                      <div className="text-sm text-gray-600 mb-1">Max</div>
-                      <div className="text-2xl font-bold text-green-600">
-                        {type === 'mood' ? numberToMood(stats.max) : type === 'energy' ? numberToEnergy(stats.max) : `${stats.max} ${metricInfo.unit}`}
+      if (loading) return <div className="min-h-screen flex items-center justify-center"><div className="animate-spin h-8 w-8 border-2 border-blue-600 border-t-transparent rounded-full"></div></div>;
+
+      return (
+        <div className="min-h-screen bg-gray-50">
+          <div className="bg-white border-b sticky top-0 z-40 px-4 py-2">
+            <div className="max-w-2xl mx-auto flex justify-between items-center">
+              <div><h1 className="font-bold text-lg">Health Tracker</h1><p className="text-xs text-gray-500">{locationName} • {getZurichDate().toLocaleDateString('de-CH')}</p></div>
+              <button onClick={() => setSettings(true)}><Icon name="Settings" size={20} /></button>
+            </div>
+          </div>
+          
+          <div className="bg-white border-b sticky top-12 z-30">
+            <div className="max-w-2xl mx-auto flex">
+              {['dashboard', 'trends', 'insights'].map(t => <button key={t} onClick={() => { setTab(t); setMetric(null); }} className={`flex-1 py-2 text-sm font-medium border-b-2 ${tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500'}`}>{t.charAt(0).toUpperCase() + t.slice(1)}</button>)}
+            </div>
+          </div>
+
+          <div className="max-w-2xl mx-auto p-4">
+            {tab === 'dashboard' && (
+              <div className="space-y-4">
+                {/* Weather + Moon */}
+                <div className="bg-gradient-to-r from-sky-500 to-blue-600 rounded-xl p-4 text-white">
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-3">
+                      {weather?.current && <Icon name={getWeather(weather.current.weather_code).icon} size={36} />}
+                      <div>
+                        <div className="text-3xl font-bold">{weather?.current ? Math.round(weather.current.temperature_2m) : '--'}°C</div>
+                        <div className="text-sm opacity-90">{weather?.current ? getWeather(weather.current.weather_code).desc : 'Loading...'}</div>
+                      </div>
+                      <div className="text-xs opacity-75 ml-4">
+                        {weather?.daily && <div>☀️ {Math.round((weather.daily.sunshine_duration?.[0] || 0) / 3600)}h</div>}
+                        {weather?.current && <div>💨 {Math.round(weather.current.wind_speed_10m)}km/h</div>}
                       </div>
                     </div>
-                    <div className="bg-white p-4 rounded-lg shadow">
-                      <div className="text-sm text-gray-600 mb-1">Min</div>
-                      <div className="text-2xl font-bold text-red-600">
-                        {type === 'mood' ? numberToMood(stats.min) : type === 'energy' ? numberToEnergy(stats.min) : `${stats.min} ${metricInfo.unit}`}
-                      </div>
+                    <div className="text-center">
+                      <div className="text-3xl">{moon.icon}</div>
+                      <div className="text-xs opacity-80">{moon.name}</div>
+                      <div className="text-xs opacity-60">{moon.illumination}%</div>
                     </div>
-                  </>
-                )}
-                <div className="bg-white p-4 rounded-lg shadow">
-                  <div className="text-sm text-gray-600 mb-1">Days Tracked</div>
-                  <div className="text-2xl font-bold">{stats.count}</div>
+                  </div>
+                </div>
+
+                {/* Wellness + Stress */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-gradient-to-br from-purple-500 to-indigo-600 rounded-xl p-4 text-white">
+                    <div className="text-xs opacity-80 mb-1">Wellness</div>
+                    <div className="text-3xl font-bold">{wellness.score}</div>
+                    <div className="text-xs mt-2 space-y-0.5 max-h-16 overflow-auto">
+                      {wellness.breakdown.slice(0, 4).map((b, i) => <div key={i} className="flex justify-between"><span>{b.f}</span><span className={b.p ? 'text-green-300' : 'text-red-300'}>{b.i > 0 ? '+' : ''}{b.i}</span></div>)}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-xl p-4 shadow">
+                    <div className="text-xs text-gray-500 mb-1">Stress Level</div>
+                    <div className={`text-3xl font-bold ${stressColor(stress.score)}`}>{stress.score}</div>
+                    <div className={`text-sm ${stressColor(stress.score)}`}>{stressLabel(stress.score)}</div>
+                    <div className="text-xs text-gray-400 mt-1 space-y-0.5">
+                      {stress.factors.slice(0, 2).map((f, i) => <div key={i}>• {f}</div>)}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Quick Stats */}
+                <div className="grid grid-cols-4 gap-2">
+                  {[{ i: 'Footprints', v: todayStats.steps.toLocaleString(), l: 'Steps', c: 'text-teal-600' }, { i: 'Flame', v: todayStats.cal, l: 'Cal', c: 'text-orange-600' }, { i: 'Zap', v: todayStats.exercise, l: 'Min', c: 'text-lime-600' }, { i: 'Droplet', v: `${todayStats.water}`, l: 'ml', c: 'text-cyan-600' }].map((s, i) => (
+                    <div key={i} className="bg-white p-2 rounded-lg shadow text-center">
+                      <Icon name={s.i} size={16} className={s.c} />
+                      <div className="font-bold text-sm">{s.v}</div>
+                      <div className="text-xs text-gray-400">{s.l}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Manual Categories */}
+                {Object.entries(manualCats).map(([cat, items]) => (
+                  <div key={cat} className="bg-white p-3 rounded-xl shadow">
+                    <h3 className="text-xs font-bold text-gray-500 uppercase mb-2">{cat}</h3>
+                    <div className="grid grid-cols-5 gap-2">
+                      {items.map(k => { const t = types[k]; return (
+                        <button key={k} onClick={() => setModal(k)} className="flex flex-col items-center p-2 rounded-lg hover:bg-gray-50">
+                          <div className={`${t.color} p-1.5 rounded-full text-white`}><Icon name={t.icon} size={14} /></div>
+                          <span className="text-xs mt-1 text-center leading-tight">{t.label}</span>
+                        </button>
+                      ); })}
+                    </div>
+                  </div>
+                ))}
+
+                {/* Recent */}
+                <div className="bg-white p-3 rounded-xl shadow">
+                  <h3 className="text-xs font-bold text-gray-500 uppercase mb-2">Recent</h3>
+                  <div className="space-y-1">
+                    {entries.slice(0, 6).map(e => { const t = types[e.type]; if (!t) return null; return (
+                      <div key={e.id} className="flex items-center gap-2 p-2 bg-gray-50 rounded text-sm">
+                        <div className={`${t.color} p-1 rounded text-white`}><Icon name={t.icon} size={12} /></div>
+                        <span className="flex-1 truncate">{t.label}</span>
+                        <span className="text-xs text-gray-400">{new Date(e.ts).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })}</span>
+                      </div>
+                    ); })}
+                  </div>
                 </div>
               </div>
             )}
 
-            <div className="bg-white p-6 rounded-lg shadow">
-              <h3 className="text-lg font-bold mb-4">Trend</h3>
-              <SimpleLineChart data={data} type={type} />
-            </div>
-
-            <div className="bg-white p-6 rounded-lg shadow">
-              <h3 className="text-lg font-bold mb-4">Recent Entries ({recentEntries.length})</h3>
-              {recentEntries.length === 0 ? (
-                <p className="text-gray-500 text-center py-4">No entries in this time range</p>
-              ) : (
-                <div className="space-y-2 max-h-64 overflow-y-auto">
-                  {recentEntries.slice().reverse().slice(0, 20).map(entry => (
-                    <div key={entry.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                      <div>
-                        <div className="font-medium">
-                          {type === 'mood' ? numberToMood(moodToNumber(entry.mood)) :
-                           type === 'energy' ? numberToEnergy(energyToNumber(entry.energy)) :
-                           `${entry[metricInfo.valueField]} ${metricInfo.unit}`}
-                        </div>
-                        <div className="text-sm text-gray-600">{new Date(entry.timestamp).toLocaleString()}</div>
-                        {entry.notes && <div className="text-sm text-gray-500 italic mt-1">{entry.notes}</div>}
-                      </div>
-                      <button onClick={() => deleteEntry(entry.id)} className="text-red-500 hover:text-red-700 p-2">
-                        <Icon name="X" size={18} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      };
-
-      const calculateWellnessScore = (todayEntries) => {
-        let score = 50;
-        const breakdown = [];
-
-        const workouts = todayEntries.filter(e => e.type === 'workout');
-        if (workouts.length > 0) { const bonus = Math.min(workouts.length * 8, 15); score += bonus; breakdown.push({ factor: 'Workouts', impact: bonus, positive: true }); }
-
-        const saunas = todayEntries.filter(e => e.type === 'sauna');
-        if (saunas.length > 0) { const bonus = Math.min(saunas.length * 10, 10); score += bonus; breakdown.push({ factor: 'Sauna', impact: bonus, positive: true }); }
-
-        const coldPlunges = todayEntries.filter(e => e.type === 'coldPlunge');
-        if (coldPlunges.length > 0) { const bonus = Math.min(coldPlunges.length * 10, 10); score += bonus; breakdown.push({ factor: 'Cold Plunge', impact: bonus, positive: true }); }
-
-        const steps = todayEntries.filter(e => e.type === 'steps').reduce((s, e) => s + (parseFloat(e.value) || 0), 0);
-        if (steps > 0) { const bonus = Math.min((steps / 10000) * 10, 10); score += bonus; breakdown.push({ factor: 'Steps', impact: Math.round(bonus), positive: true }); }
-
-        const exerciseMin = todayEntries.filter(e => e.type === 'exerciseMinutes').reduce((s, e) => s + (parseFloat(e.value) || 0), 0);
-        if (exerciseMin >= 30) { const bonus = Math.min((exerciseMin / 30) * 10, 10); score += bonus; breakdown.push({ factor: 'Exercise', impact: Math.round(bonus), positive: true }); }
-
-        const sleep = todayEntries.filter(e => e.type === 'sleep');
-        if (sleep.length > 0) {
-          const hrs = parseFloat(sleep[0].value) || 0;
-          if (hrs >= 7 && hrs <= 9) { score += 15; breakdown.push({ factor: 'Sleep', impact: 15, positive: true }); }
-          else if (hrs < 6) { score -= 10; breakdown.push({ factor: 'Poor Sleep', impact: -10, positive: false }); }
-        }
-
-        const water = todayEntries.filter(e => e.type === 'water').reduce((s, e) => s + (parseFloat(e.quantity) || 0), 0);
-        if (water >= 2000) { const bonus = Math.min((water / 2000) * 8, 8); score += bonus; breakdown.push({ factor: 'Hydration', impact: Math.round(bonus), positive: true }); }
-        else if (water > 0 && water < 1000) { score -= 5; breakdown.push({ factor: 'Low Hydration', impact: -5, positive: false }); }
-
-        const coffee = todayEntries.filter(e => e.type === 'coffee').reduce((s, e) => s + (parseFloat(e.quantity) || 0), 0);
-        if (coffee > 4) { score -= 5; breakdown.push({ factor: 'Too Much Coffee', impact: -5, positive: false }); }
-
-        const alcohol = todayEntries.filter(e => e.type === 'alcohol').reduce((s, e) => s + (parseFloat(e.quantity) || 0), 0);
-        if (alcohol > 0) { const penalty = Math.min(alcohol * 10, 20); score -= penalty; breakdown.push({ factor: 'Alcohol', impact: -penalty, positive: false }); }
-
-        const mood = todayEntries.filter(e => e.type === 'mood');
-        if (mood.length > 0) {
-          const val = mood[0].mood;
-          if (val === 'great') { score += 10; breakdown.push({ factor: 'Great Mood', impact: 10, positive: true }); }
-          else if (val === 'good') { score += 5; breakdown.push({ factor: 'Good Mood', impact: 5, positive: true }); }
-          else if (val === 'low') { score -= 5; breakdown.push({ factor: 'Low Mood', impact: -5, positive: false }); }
-          else if (val === 'bad') { score -= 10; breakdown.push({ factor: 'Bad Mood', impact: -10, positive: false }); }
-        }
-
-        const energy = todayEntries.filter(e => e.type === 'energy');
-        if (energy.length > 0) {
-          const val = energy[0].energy;
-          if (val === 'very-high') { score += 8; breakdown.push({ factor: 'High Energy', impact: 8, positive: true }); }
-          else if (val === 'high') { score += 5; breakdown.push({ factor: 'Good Energy', impact: 5, positive: true }); }
-          else if (val === 'low') { score -= 5; breakdown.push({ factor: 'Low Energy', impact: -5, positive: false }); }
-          else if (val === 'very-low') { score -= 8; breakdown.push({ factor: 'Very Low Energy', impact: -8, positive: false }); }
-        }
-
-        const mindful = todayEntries.filter(e => e.type === 'mindfulMinutes').reduce((s, e) => s + (parseFloat(e.value) || 0), 0);
-        if (mindful >= 10) { const bonus = Math.min((mindful / 10) * 8, 8); score += bonus; breakdown.push({ factor: 'Mindfulness', impact: Math.round(bonus), positive: true }); }
-
-        const hrv = todayEntries.filter(e => e.type === 'hrv');
-        if (hrv.length > 0) {
-          const val = parseFloat(hrv[0].value) || 0;
-          if (val >= 50) { score += 8; breakdown.push({ factor: 'Excellent HRV', impact: 8, positive: true }); }
-          else if (val >= 30) { score += 4; breakdown.push({ factor: 'Good HRV', impact: 4, positive: true }); }
-          else if (val < 20) { score -= 5; breakdown.push({ factor: 'Low HRV', impact: -5, positive: false }); }
-        }
-
-        const workHours = todayEntries.filter(e => e.type === 'workHours').reduce((s, e) => s + (parseFloat(e.duration) || 0), 0);
-        if (workHours > 8) { const penalty = Math.min((workHours - 8) * 2, 15); score -= penalty; breakdown.push({ factor: 'Long Work Hours', impact: -Math.round(penalty), positive: false }); }
-
-        const meetings = todayEntries.filter(e => e.type === 'meetings').reduce((s, e) => s + (parseFloat(e.meetingCount) || 0), 0);
-        if (meetings > 3) { const penalty = Math.min((meetings - 3) * 2, 10); score -= penalty; breakdown.push({ factor: 'Too Many Meetings', impact: -Math.round(penalty), positive: false }); }
-
-        return { score: Math.max(0, Math.min(100, Math.round(score))), breakdown };
-      };
-
-      const ManualEntryForm = ({ type, onClose, onSave }) => {
-        const [formData, setFormData] = useState({
-          date: new Date().toISOString().slice(0, 16),
-          duration: '', temperature: '', notes: '', value: '', quantity: '', mood: 'neutral', energy: 'medium', meetingCount: ''
-        });
-
-        const handleSubmit = () => {
-          const entry = { id: Date.now(), type, timestamp: new Date(formData.date).toISOString(), ...formData, source: 'manual' };
-          onSave(entry);
-          onClose();
-        };
-
-        const renderField = () => {
-          switch(type) {
-            case 'sauna':
-            case 'coldPlunge':
-              return (
-                <>
-                  <div>
-                    <label className="block text-sm font-medium mb-1">Duration (minutes)</label>
-                    <input type="number" value={formData.duration} onChange={(e) => setFormData({...formData, duration: e.target.value})} className="w-full border rounded px-3 py-2" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-1">Temperature (°C)</label>
-                    <input type="number" value={formData.temperature} onChange={(e) => setFormData({...formData, temperature: e.target.value})} className="w-full border rounded px-3 py-2" />
-                  </div>
-                </>
-              );
-            case 'workout':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Duration (minutes)</label>
-                  <input type="number" value={formData.duration} onChange={(e) => setFormData({...formData, duration: e.target.value})} className="w-full border rounded px-3 py-2" />
-                </div>
-              );
-            case 'heartRate':
-            case 'restingHeartRate':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Heart Rate (bpm)</label>
-                  <input type="number" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full border rounded px-3 py-2" />
-                </div>
-              );
-            case 'hrv':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">HRV (ms)</label>
-                  <input type="number" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 45" />
-                </div>
-              );
-            case 'bloodOxygen':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Blood Oxygen (%)</label>
-                  <input type="number" step="0.1" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 98.5" />
-                </div>
-              );
-            case 'respiratoryRate':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Breaths per Minute</label>
-                  <input type="number" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 16" />
-                </div>
-              );
-            case 'vo2Max':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">VO2 Max (ml/kg/min)</label>
-                  <input type="number" step="0.1" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 42.5" />
-                </div>
-              );
-            case 'sleep':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Hours Slept</label>
-                  <input type="number" step="0.1" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full border rounded px-3 py-2" />
-                </div>
-              );
-            case 'water':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Amount (ml)</label>
-                  <input type="number" value={formData.quantity} onChange={(e) => setFormData({...formData, quantity: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 500" />
-                </div>
-              );
-            case 'coffee':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Cups</label>
-                  <input type="number" step="0.5" value={formData.quantity} onChange={(e) => setFormData({...formData, quantity: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 1.5" />
-                </div>
-              );
-            case 'alcohol':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Drinks</label>
-                  <input type="number" step="0.5" value={formData.quantity} onChange={(e) => setFormData({...formData, quantity: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 2" />
-                </div>
-              );
-            case 'steps':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Steps</label>
-                  <input type="number" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 10000" />
-                </div>
-              );
-            case 'activeCalories':
-            case 'totalCalories':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">{type === 'activeCalories' ? 'Active' : 'Total'} Calories (kcal)</label>
-                  <input type="number" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full border rounded px-3 py-2" />
-                </div>
-              );
-            case 'exerciseMinutes':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Exercise Minutes</label>
-                  <input type="number" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 30" />
-                </div>
-              );
-            case 'standHours':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Stand Hours</label>
-                  <input type="number" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 12" />
-                </div>
-              );
-            case 'distance':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Distance (km)</label>
-                  <input type="number" step="0.1" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 8.5" />
-                </div>
-              );
-            case 'weight':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Weight (kg)</label>
-                  <input type="number" step="0.1" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 80.5" />
-                </div>
-              );
-            case 'mindfulMinutes':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Mindful Minutes</label>
-                  <input type="number" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 10" />
-                </div>
-              );
-            case 'mood':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">How are you feeling?</label>
-                  <select value={formData.mood} onChange={(e) => setFormData({...formData, mood: e.target.value})} className="w-full border rounded px-3 py-2">
-                    <option value="great">😄 Great</option>
-                    <option value="good">🙂 Good</option>
-                    <option value="neutral">😐 Neutral</option>
-                    <option value="low">😕 Low</option>
-                    <option value="bad">😢 Bad</option>
-                  </select>
-                </div>
-              );
-            case 'energy':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Energy Level</label>
-                  <select value={formData.energy} onChange={(e) => setFormData({...formData, energy: e.target.value})} className="w-full border rounded px-3 py-2">
-                    <option value="very-high">⚡ Very High</option>
-                    <option value="high">🔋 High</option>
-                    <option value="medium">➡️ Medium</option>
-                    <option value="low">🔻 Low</option>
-                    <option value="very-low">💤 Very Low</option>
-                  </select>
-                </div>
-              );
-            case 'workHours':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Hours Worked</label>
-                  <input type="number" step="0.5" value={formData.duration} onChange={(e) => setFormData({...formData, duration: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 8.5" />
-                </div>
-              );
-            case 'meetings':
-              return (
-                <div>
-                  <label className="block text-sm font-medium mb-1">Number of Meetings</label>
-                  <input type="number" value={formData.meetingCount} onChange={(e) => setFormData({...formData, meetingCount: e.target.value})} className="w-full border rounded px-3 py-2" placeholder="e.g., 5" />
-                </div>
-              );
-            default:
-              return null;
-          }
-        };
-
-        return (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-            <div className="bg-white rounded-lg max-w-md w-full p-6 max-h-screen overflow-y-auto">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-xl font-bold">Log {activityTypes[type].label}</h3>
-                <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
-                  <Icon name="X" size={24} />
-                </button>
-              </div>
-              
+            {tab === 'trends' && (metric ? <Detail type={metric} onBack={() => setMetric(null)} /> : (
               <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Date & Time</label>
-                  <input type="datetime-local" value={formData.date} onChange={(e) => setFormData({...formData, date: e.target.value})} className="w-full border rounded px-3 py-2" />
-                </div>
-
-                {renderField()}
-
-                <div>
-                  <label className="block text-sm font-medium mb-1">Notes (optional)</label>
-                  <textarea value={formData.notes} onChange={(e) => setFormData({...formData, notes: e.target.value})} className="w-full border rounded px-3 py-2" rows="3" />
-                </div>
-
-                <div className="flex gap-2">
-                  <button onClick={handleSubmit} className="flex-1 bg-blue-600 text-white rounded py-2 hover:bg-blue-700">Save Entry</button>
-                  <button onClick={onClose} className="flex-1 border border-gray-300 rounded py-2 hover:bg-gray-50">Cancel</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      };
-
-      const addEntry = (entry) => setEntries([entry, ...entries]);
-      const deleteEntry = (id) => setEntries(entries.filter(e => e.id !== id));
-
-      const getStats = () => {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const todayEntries = entries.filter(e => {
-          const entryDate = new Date(e.timestamp);
-          entryDate.setHours(0, 0, 0, 0);
-          return entryDate.getTime() === today.getTime();
-        });
-
-        return {
-          totalEntries: entries.length,
-          waterToday: todayEntries.filter(e => e.type === 'water').reduce((sum, e) => sum + (parseFloat(e.quantity) || 0), 0),
-          stepsToday: todayEntries.filter(e => e.type === 'steps').reduce((sum, e) => sum + (parseFloat(e.value) || 0), 0),
-          activeCaloriesToday: todayEntries.filter(e => e.type === 'activeCalories').reduce((sum, e) => sum + (parseFloat(e.value) || 0), 0),
-          exerciseMinutesToday: todayEntries.filter(e => e.type === 'exerciseMinutes').reduce((sum, e) => sum + (parseFloat(e.value) || 0), 0),
-          wellnessScore: calculateWellnessScore(todayEntries)
-        };
-      };
-
-      const stats = getStats();
-      const getScoreLabel = (score) => score >= 80 ? 'Excellent' : score >= 60 ? 'Good' : score >= 40 ? 'Fair' : score >= 20 ? 'Poor' : 'Critical';
-
-      const categories = {
-        wellness: ['sauna', 'coldPlunge'],
-        fitness: ['workout', 'steps', 'activeCalories', 'totalCalories', 'exerciseMinutes', 'standHours', 'distance'],
-        vitals: ['sleep', 'heartRate', 'restingHeartRate', 'hrv', 'bloodOxygen', 'respiratoryRate', 'vo2Max', 'weight'],
-        nutrition: ['water', 'coffee', 'alcohol'],
-        mental: ['mood', 'mindfulMinutes', 'energy'],
-        productivity: ['workHours', 'meetings']
-      };
-
-      const getEntryCountForType = (type) => entries.filter(e => e.type === type).length;
-
-      if (loading) {
-        return (
-          <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-            <div className="text-center">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-              <p className="text-gray-600">Loading...</p>
-            </div>
-          </div>
-        );
-      }
-
-      return (
-        <div className="min-h-screen bg-gray-50">
-          <div className="bg-white border-b sticky top-0 z-40">
-            <div className="max-w-7xl mx-auto px-4 py-4">
-              <h1 className="text-2xl font-bold text-gray-900">Health Tracker</h1>
-              <p className="text-gray-600 text-sm">Track your wellness journey</p>
-            </div>
-          </div>
-
-          <div className="bg-white border-b sticky top-16 z-30">
-            <div className="max-w-7xl mx-auto px-4">
-              <div className="flex gap-4 overflow-x-auto">
-                {['dashboard', 'trends', 'entries'].map(tab => (
-                  <button 
-                    key={tab}
-                    onClick={() => { setActiveTab(tab); setSelectedMetric(null); }} 
-                    className={`py-3 px-2 border-b-2 font-medium whitespace-nowrap ${activeTab === tab ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-600 hover:text-gray-900'}`}
-                  >
-                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                  </button>
+                {Object.entries(allCats).map(([cat, items]) => (
+                  <div key={cat} className="bg-white p-3 rounded-xl shadow">
+                    <h3 className="text-xs font-bold text-gray-500 uppercase mb-2">{cat}</h3>
+                    <div className="grid grid-cols-2 gap-2">
+                      {items.map(k => { const t = types[k]; const n = entries.filter(e => e.type === k).length; return (
+                        <button key={k} onClick={() => setMetric(k)} className={`flex items-center gap-2 p-2 rounded-lg text-left ${n ? 'hover:bg-gray-50' : 'opacity-40'}`}>
+                          <div className={`${t.color} p-2 rounded text-white`}><Icon name={t.icon} size={14} /></div>
+                          <div><div className="font-medium text-sm">{t.label}</div><div className="text-xs text-gray-400">{n} entries</div></div>
+                        </button>
+                      ); })}
+                    </div>
+                  </div>
                 ))}
               </div>
-            </div>
-          </div>
+            ))}
 
-          <div className="max-w-7xl mx-auto px-4 py-6">
-            {activeTab === 'dashboard' && (
-              <div className="space-y-6">
-                <div className="bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl shadow-lg p-6 md:p-8 text-white">
-                  <div className="flex items-center justify-between mb-6">
-                    <div>
-                      <h2 className="text-xl md:text-2xl font-bold mb-1">Today's Wellness Score</h2>
-                      <p className="text-blue-100 text-sm">Based on all your tracked activities</p>
-                    </div>
-                    <Icon name="Award" size={48} className="opacity-80" />
+            {tab === 'insights' && (
+              <div className="space-y-4">
+                {/* Custom Correlation */}
+                <div className="bg-white p-4 rounded-xl shadow">
+                  <h3 className="font-bold mb-3 flex items-center gap-2"><Icon name="Search" size={16} />Find Correlation</h3>
+                  <div className="grid grid-cols-3 gap-2">
+                    <select value={corr1} onChange={e => setCorr1(e.target.value)} className="border rounded p-2 text-sm">
+                      <option value="">Metric 1</option>
+                      {allMetrics.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <select value={corr2} onChange={e => setCorr2(e.target.value)} className="border rounded p-2 text-sm">
+                      <option value="">Metric 2</option>
+                      {allMetrics.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <button onClick={findCustomCorr} className="bg-blue-600 text-white rounded text-sm">Analyze</button>
                   </div>
-                  
-                  <div className="flex flex-col md:flex-row items-center gap-6 md:gap-8">
-                    <div className="relative">
-                      <svg className="transform -rotate-90" width="140" height="140">
-                        <circle cx="70" cy="70" r="60" stroke="rgba(255,255,255,0.2)" strokeWidth="10" fill="none" />
-                        <circle cx="70" cy="70" r="60" stroke="white" strokeWidth="10" fill="none"
-                          strokeDasharray={`${2 * Math.PI * 60}`}
-                          strokeDashoffset={`${2 * Math.PI * 60 * (1 - stats.wellnessScore.score / 100)}`}
-                          strokeLinecap="round"
-                        />
-                      </svg>
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <div className="text-center">
-                          <div className="text-4xl font-bold">{stats.wellnessScore.score}</div>
-                          <div className="text-sm opacity-90">{getScoreLabel(stats.wellnessScore.score)}</div>
+                  {customCorr && (
+                    <div className={`mt-3 p-3 rounded ${customCorr.error ? 'bg-red-50 text-red-600' : customCorr.corr > 0 ? 'bg-green-50' : 'bg-red-50'}`}>
+                      {customCorr.error ? <p className="text-sm">{customCorr.error}</p> : (
+                        <div><p className="font-medium text-sm">{customCorr.m1} ↔ {customCorr.m2}</p><p className={`text-xl font-bold ${customCorr.corr > 0 ? 'text-green-600' : 'text-red-600'}`}>{customCorr.corr > 0 ? '+' : ''}{(customCorr.corr * 100).toFixed(0)}%</p><p className="text-xs text-gray-500">{customCorr.n} days</p></div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Auto Correlations */}
+                <div className="bg-white p-4 rounded-xl shadow">
+                  <h3 className="font-bold mb-3 flex items-center gap-2"><Icon name="Lightbulb" size={16} className="text-yellow-500" />Discovered</h3>
+                  {correlations.length === 0 ? <p className="text-gray-400 text-center py-8 text-sm">Track 5+ days to see correlations</p> : (
+                    <div className="space-y-2">
+                      {correlations.slice(0, 15).map((c, i) => (
+                        <div key={i} className={`p-2 rounded text-sm ${c.strength === 'strong' ? 'bg-yellow-50' : c.strength === 'moderate' ? 'bg-blue-50' : 'bg-gray-50'}`}>
+                          <div className="flex justify-between">
+                            <span>{c.cause} → {c.effect}</span>
+                            <span className={c.dir === 'positive' ? 'text-green-600' : 'text-red-600'}>{c.corr > 0 ? '+' : ''}{(c.corr * 100).toFixed(0)}%</span>
+                          </div>
+                          <div className="text-xs text-gray-400">{c.n} days • {c.strength}</div>
                         </div>
-                      </div>
-                    </div>
-
-                    <div className="flex-1 w-full">
-                      <h3 className="font-semibold mb-3 text-lg">Score Breakdown</h3>
-                      <div className="space-y-2 max-h-32 overflow-y-auto pr-2">
-                        {stats.wellnessScore.breakdown.map((item, idx) => (
-                          <div key={idx} className="flex items-center justify-between text-sm bg-white bg-opacity-20 rounded px-3 py-2">
-                            <span>{item.factor}</span>
-                            <span className={`font-bold ${item.positive ? 'text-green-200' : 'text-red-200'}`}>
-                              {item.impact > 0 ? '+' : ''}{item.impact}
-                            </span>
-                          </div>
-                        ))}
-                        {stats.wellnessScore.breakdown.length === 0 && (
-                          <p className="text-blue-100 text-sm italic">Start tracking activities to see your score breakdown</p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
-                  {[
-                    { icon: 'Footprints', value: stats.stepsToday.toLocaleString(), label: 'Steps Today', color: 'text-teal-600' },
-                    { icon: 'Flame', value: stats.activeCaloriesToday, label: 'Active Cal Today', color: 'text-orange-600' },
-                    { icon: 'Zap', value: stats.exerciseMinutesToday, label: 'Exercise Min Today', color: 'text-lime-600' },
-                    { icon: 'Droplet', value: `${Math.round(stats.waterToday)} ml`, label: 'Water Today', color: 'text-cyan-600' }
-                  ].map((stat, i) => (
-                    <div key={i} className="bg-white p-4 rounded-lg shadow">
-                      <div className="flex items-center gap-2 mb-1">
-                        <Icon name={stat.icon} size={20} className={stat.color} />
-                        <div className="text-xl md:text-2xl font-bold">{stat.value}</div>
-                      </div>
-                      <div className="text-xs md:text-sm text-gray-600">{stat.label}</div>
-                    </div>
-                  ))}
-                </div>
-
-                {Object.entries(categories).map(([category, types]) => (
-                  <div key={category} className="bg-white p-4 md:p-6 rounded-lg shadow">
-                    <h2 className="text-lg font-bold mb-4 capitalize">{category}</h2>
-                    <div className="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-7 gap-2 md:gap-3">
-                      {types.map(key => {
-                        const info = activityTypes[key];
-                        return (
-                          <button key={key} onClick={() => { setModalType(key); setShowModal(true); }} 
-                            className="flex flex-col items-center gap-2 p-2 md:p-3 border-2 border-gray-200 rounded-lg hover:border-blue-400 hover:bg-blue-50 transition">
-                            <div className={`${info.color} p-2 rounded-full text-white`}>
-                              <Icon name={info.icon} size={18} />
-                            </div>
-                            <span className="text-xs font-medium text-center leading-tight">{info.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-
-                <div className="bg-white p-4 md:p-6 rounded-lg shadow">
-                  <h2 className="text-lg font-bold mb-4">Recent Activity</h2>
-                  {entries.length === 0 ? (
-                    <div className="text-center py-8 text-gray-500">
-                      <Icon name="Activity" size={48} className="mx-auto mb-2" />
-                      <p>No entries yet. Start tracking!</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {entries.slice(0, 10).map(entry => {
-                        const info = activityTypes[entry.type];
-                        return (
-                          <div key={entry.id} className="flex items-center gap-3 p-3 border rounded-lg">
-                            <div className={`${info.color} p-2 rounded text-white flex-shrink-0`}>
-                              <Icon name={info.icon} size={20} />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="font-medium">{info.label}</div>
-                              <div className="text-sm text-gray-600">{new Date(entry.timestamp).toLocaleString()}</div>
-                            </div>
-                          </div>
-                        );
-                      })}
+                      ))}
                     </div>
                   )}
                 </div>
               </div>
             )}
-
-            {activeTab === 'trends' && (
-              selectedMetric ? (
-                <MetricDetailView type={selectedMetric} onBack={() => setSelectedMetric(null)} />
-              ) : (
-                <div className="space-y-6">
-                  <div className="bg-white p-4 md:p-6 rounded-lg shadow">
-                    <div className="flex items-center gap-3 mb-6">
-                      <Icon name="TrendingUp" size={28} className="text-blue-600" />
-                      <div>
-                        <h2 className="text-xl font-bold">Trends & Analytics</h2>
-                        <p className="text-gray-600 text-sm">Click on any metric to view detailed trends</p>
-                      </div>
-                    </div>
-
-                    {Object.entries(categories).map(([category, types]) => (
-                      <div key={category} className="mb-8">
-                        <h3 className="text-lg font-semibold mb-4 capitalize text-gray-800 border-b pb-2">{category}</h3>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
-                          {types.map(key => {
-                            const info = activityTypes[key];
-                            const count = getEntryCountForType(key);
-                            const hasData = count > 0;
-                            
-                            return (
-                              <button key={key} onClick={() => setSelectedMetric(key)}
-                                className={`flex items-center gap-4 p-4 border-2 rounded-xl transition-all text-left ${
-                                  hasData ? 'border-gray-200 hover:border-blue-400 hover:shadow-md hover:bg-blue-50' : 'border-gray-100 bg-gray-50 opacity-60'
-                                }`}>
-                                <div className={`${info.color} p-3 rounded-xl text-white flex-shrink-0`}>
-                                  <Icon name={info.icon} size={24} />
-                                </div>
-                                <div>
-                                  <div className="font-semibold text-gray-900">{info.label}</div>
-                                  <div className="text-sm text-gray-500">{hasData ? `${count} entries` : 'No data'}</div>
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )
-            )}
-
-            {activeTab === 'entries' && (
-              <div className="bg-white p-4 md:p-6 rounded-lg shadow">
-                <h2 className="text-lg font-bold mb-4">All Entries ({entries.length})</h2>
-                {entries.length === 0 ? (
-                  <div className="text-center py-8 text-gray-500">
-                    <Icon name="Calendar" size={48} className="mx-auto mb-2" />
-                    <p>No entries yet</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {entries.map(entry => {
-                      const info = activityTypes[entry.type];
-                      return (
-                        <div key={entry.id} className="flex items-center gap-3 p-4 border rounded-lg hover:bg-gray-50">
-                          <div className={`${info.color} p-2 rounded text-white flex-shrink-0`}>
-                            <Icon name={info.icon} size={20} />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="font-medium">{info.label}</div>
-                            <div className="text-sm text-gray-600">{new Date(entry.timestamp).toLocaleString()}</div>
-                            {entry.notes && <div className="text-sm text-gray-600 italic">{entry.notes}</div>}
-                          </div>
-                          <button onClick={() => deleteEntry(entry.id)} className="text-red-600 hover:text-red-800 p-2 flex-shrink-0">
-                            <Icon name="X" size={20} />
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
 
-          {showModal && <ManualEntryForm type={modalType} onClose={() => setShowModal(false)} onSave={addEntry} />}
+          {modal && <Modal type={modal} onClose={() => setModal(null)} />}
+          {settings && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-xl w-full max-w-sm p-5">
+                <div className="flex justify-between mb-4"><h3 className="font-bold">Settings</h3><button onClick={() => setSettings(false)}><Icon name="X" size={20} /></button></div>
+                <div className="space-y-3">
+                  <div><label className="text-sm font-medium">Trakt.tv Client ID</label><input type="text" value={trakt.clientId} onChange={e => setTrakt({...trakt, clientId: e.target.value})} className="w-full border rounded p-2 text-sm mt-1" /></div>
+                  <div><label className="text-sm font-medium">Trakt.tv Token</label><input type="password" value={trakt.token} onChange={e => setTrakt({...trakt, token: e.target.value})} className="w-full border rounded p-2 text-sm mt-1" /></div>
+                  <button onClick={() => { localStorage.setItem('ht-trakt', JSON.stringify(trakt)); setSettings(false); }} className="w-full bg-blue-600 text-white rounded p-2">Save</button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       );
     };
 
-    ReactDOM.render(<HealthTracker />, document.getElementById('root'));
+    ReactDOM.render(<App />, document.getElementById('root'));
   </script>
 </body>
 </html>
